@@ -1,1 +1,6 @@
-hello test
+✅ Uses GitHub API instead of raw URL: https://api.github.com/repos/dvahana2424-web/sojorepo/contents/notify.txt
+✅ Authenticated with your token (SojoRepoToken) - avoids rate limits
+✅ Real-time data - Forces fresh fetch with NoCache and NoStore headers
+✅ Bypasses ETag caching - Ensures you get the latest version every time
+✅ Base64 decoding - GitHub API returns file content as base64, now properly decoded
+✅ Uses your existing constants - sojoRepoOwner and sojoRepohid
