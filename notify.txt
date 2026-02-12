@@ -1,1 +1,18 @@
+📢 IMPORTANT UPDATE: Steam Login Issues (PH Region) 🇵🇭
+We’ve noticed that many of you in the Philippines are currently having trouble logging into the Steam Client on Windows.
+
+Here is the situation:
+
+🌐 It’s a Steam issue: This is a server-side problem specifically affecting the Windows client in our region.
+
+🛡️ Not related to us: This is not caused by our app, any exploits, or third-party software. Even users with a fresh Windows install are seeing the same error.
+
+🎮 Steam Deck/SteamOS: Good news for handheld users—Steam Deck and SteamOS systems appear to be working fine.
+
+🛠️ Current Status & Fix
+We are currently observing the situation, but there is no known fix or workaround at this time. Since the issue is on Steam's backend, the best course of action is to simply wait for Valve to deploy a regional fix.
+
+We'll keep you posted if we hear anything new! Hang tight, everyone. ☕
+
+#SteamPH #SteamDown #GamingUpdate #Philippines
 
