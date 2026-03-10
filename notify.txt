@@ -1,23 +1,11 @@
-⚠️ IMPORTANT UPDATE: MISSING GAMES OR PURCHASE ERRORS ⚠️
-If you have updated your Steam client today 3/10/26 and are noticing that games are missing from your library or showing up as "Purchase" instead of "Play," you are not alone! This is a known issue caused by the latest app update.
-
-THE FIX:
-To restore your library and fix the "missing games" bug, follow these steps:
-
-1️⃣  Open Steam and go to Settings.
-2️⃣  Select the Downloads tab.
-3️⃣  Click Clear Download Cache.
-4️⃣  Steam will restart.
-
-After the restart, your games should reappear, and the "Play" buttons will be restored! ✅
-
-there is a video tutorial for clearing download cache here too please watch:
-
-https://youtu.be/Cn8420_a9R0?si=YI1COdY6EYH_-TwI
-
-🔄 STILL SEEING THE ERROR?
-If the issue persists, simply repeat the process. We are currently investigating and will push a permanent server-side fix soon.
-
-It was reported by some users that the issues will still again show after you add games or restart steam, so the fix is just repeat the process of clearing the download cache.
-
-Thanks for your patience! 🙏
+✅ Fixes "Purchase" & Missing Game Errors (from latest update) 
+The Full Ultra-Short Post:
+🔨 3.4 Update is LIVE!
+This version fixes the "Missing Game" and "Purchase" button errors from the latest 1773099986 client update.
+What’s New:
+✅ Error Fix: Resolves "Purchase instead of Play" bugs.
+✅ Force Update: New modes for 1 & 2.
+✅ UI Refresh: Now with fully labeled switches.
+✅ Direct Alerts: New in-app news system.
+📩 READY TO UPDATE?
+Just reach us out via Messenger for the 3.4!
