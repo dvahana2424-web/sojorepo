@@ -1,1 +1,10 @@
+⚠️ URGENT: DO NOT UPDATE STEAM ⚠️
+STOP! Do not update your Steam client. The latest update will BREAK the current unlock.
 
+If you have already updated, wait for the fix. I will post a guide shortly on how to downgrade to the last working version.
+
+Last Working Version: 1769025840
+
+Status: Fix / Downgrade guide incoming.
+
+Stay on the current version to keep your access!
