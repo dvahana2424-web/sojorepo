@@ -1,6 +1,6 @@
 ✅ Fixes "Purchase" & Missing Game Errors (from latest update) 
 The Full Ultra-Short Post:
-🔨 3.4 Update is LIVE!
+🔨 3.4 Update is LIVE! If your app is still in 3.3 it is the right time to update
 This version fixes the "Missing Game" and "Purchase" button errors from the latest 1773099986 client update.
 What’s New:
 ✅ Error Fix: Resolves "Purchase instead of Play" bugs.
