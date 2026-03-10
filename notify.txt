@@ -18,4 +18,6 @@ https://youtu.be/Cn8420_a9R0?si=YI1COdY6EYH_-TwI
 🔄 STILL SEEING THE ERROR?
 If the issue persists, simply repeat the process. We are currently investigating and will push a permanent server-side fix soon.
 
+It was reported by some users that the issues will still again show after you add games or restart steam, so the fix is just repeat the process of clearing the download cache.
+
 Thanks for your patience! 🙏
