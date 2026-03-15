@@ -1,17 +1,10 @@
 🛠️ Steam Update ERROR Loop Fix 
 Stuck on a "Steam Updating" loop or steam not booting/starting? Here is the quick fix:
 
-
 Open Hammer App → Click Unlock Mode 2 🔓
-
 Ignore errors → Open Steam
-
 Steam Settings > Downloads > Clear Download Cache 🧹
-
 Restart Steam
-
 Close & Re-open Hammer → Click the Red Circle to reactivate Unlock Mode 🔴
-
 Restart Steam again and you're all set! 🚀
-
 REFERENCE VIDEO TUTORIAL : https://streamable.com/i8rq38
