@@ -1,9 +1,10 @@
-🛠️ STEAM NOT OPENING  Fix (Hammer 3.4)
-Hammer App 3.4: Open and click Unlock Mode 2 (Ignore any errors).
-
-Close Hammer: Exit the app.
-
-Re-activate: Re-open Hammer and click the Red Circle.
-
-Finish: Click Restart Steam when prompted. 🚀
-REFERENCE VIDEO TUTORIAL : https://streamable.com/hdsgte
+🛠️ STEAM FIX: Purchase Errors & Missing Games (Hammer 3.4) 🚀
+If you’re seeing purchase errors or your library looks empty, follow these quick steps to get back in the game!
+Follow these steps exactly:
+1️⃣ Unlock Mode: Open Hammer 3.4 and click UNLOCK MODE 2.
+(If an error message or window pops up, just ignore it and close that window.)
+2️⃣ Exit: Close the Hammer app completely.
+3️⃣ Run as Admin: Re-open the Hammer app (Right-click the icon and select "Run as Administrator"). 🛡️
+4️⃣ Re-Activate: Click the Red Circle to activate UNLOCK MODE again.
+5️⃣ Finish: Click Restart Steam when prompted. Your games should now be visible and errors cleared! ✅
+📺 NEED HELP? Watch the 1-minute video tutorial here: https://streamable.com/adt2am
