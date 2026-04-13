@@ -1,7 +1,257 @@
-TEST SUCCESSFUL
-modifted andfd
-alen 1:22am no
-https://youtu.be/otzXtiodkEE?si=kLyMHuzM6yPF217X
+using Avalonia;
+using Avalonia.Controls;
+using Avalonia.Controls.Primitives;
+using Avalonia.Layout;
+using Avalonia.Media;
+using System;
+using System.Diagnostics;
+using System.Net.Http;
+using System.Runtime.InteropServices;
+using System.Text;
+using System.Text.Json;
+using System.Text.RegularExpressions;
+using System.Threading.Tasks;
 
-kita mo ba
-nabago ko na ng 1:09AM
+public static class StartupNotificationTool
+{
+    private static bool _shownThisSession;
+
+    // GitHub API endpoint — bypasses CDN caching entirely, always returns fresh content
+    private const string RepoOwner = "dvahana2424-web";
+    private const string RepoName  = "sojorepo";
+    private const string FileName  = "notifyonetap.txt";
+
+    private static string ApiUrl =>
+        $"https://api.github.com/repos/{RepoOwner}/{RepoName}/contents/{FileName}";
+
+    // Matches http:// and https:// URLs anywhere in a line
+    private static readonly Regex _urlRegex = new Regex(
+        @"https?://[^\s]+",
+        RegexOptions.Compiled | RegexOptions.IgnoreCase
+    );
+
+    private static async Task<string> FetchNotifyTextAsync()
+    {
+        using var http = new HttpClient();
+        // GitHub API requires a User-Agent header
+        http.DefaultRequestHeaders.UserAgent.ParseAdd("HammerApp/1.0");
+        http.DefaultRequestHeaders.Accept.ParseAdd("application/vnd.github.v3+json");
+        // Kill any caching and bypass GitHub's ETag caching
+        http.DefaultRequestHeaders.CacheControl = new System.Net.Http.Headers.CacheControlHeaderValue
+        {
+            NoCache = true,
+            NoStore = true
+        };
+        http.DefaultRequestHeaders.Add("If-None-Match", "");
+        http.Timeout = TimeSpan.FromSeconds(10);
+
+        var response = await http.GetAsync(ApiUrl);
+        if (!response.IsSuccessStatusCode)
+            return null;
+
+        var json = await response.Content.ReadAsStringAsync();
+        using var doc = JsonDocument.Parse(json);
+
+        if (!doc.RootElement.TryGetProperty("content", out var contentProp))
+            return null;
+
+        // GitHub API returns file content as base64 — decode it
+        var base64 = contentProp.GetString()
+            ?.Replace("\n", "")
+            .Replace(" ", "");
+
+        if (string.IsNullOrWhiteSpace(base64))
+            return null;
+
+        return Encoding.UTF8.GetString(Convert.FromBase64String(base64)).Trim();
+    }
+
+    public static async Task TryShowStartupNotificationAsync(Window owner)
+    {
+        if (_shownThisSession)
+            return;
+
+        try
+        {
+            var text = await FetchNotifyTextAsync();
+
+            if (string.IsNullOrWhiteSpace(text))
+                return;
+
+            _shownThisSession = true;
+
+            var popup = BuildWindow(text);
+            await popup.ShowDialog(owner);
+        }
+        catch
+        {
+            // Fail silently so startup never breaks if GitHub is down or file is missing.
+        }
+    }
+
+    private static void OpenUrl(string url)
+    {
+        try
+        {
+            if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
+                Process.Start(new ProcessStartInfo(url) { UseShellExecute = true });
+            else if (RuntimeInformation.IsOSPlatform(OSPlatform.OSX))
+                Process.Start("open", url);
+            else
+                Process.Start("xdg-open", url);
+        }
+        catch { }
+    }
+
+    private static StackPanel BuildContentPanel(string message)
+    {
+        var panel = new StackPanel
+        {
+            Spacing = 6,
+            Margin = new Thickness(4)
+        };
+
+        foreach (var line in message.Split('\n'))
+        {
+            var trimmed = line.TrimEnd('\r');
+            var matches = _urlRegex.Matches(trimmed);
+
+            if (matches.Count == 0)
+            {
+                // Plain text line
+                panel.Children.Add(new TextBlock
+                {
+                    Text = trimmed,
+                    TextWrapping = TextWrapping.Wrap,
+                    Foreground = Brushes.White,
+                    FontSize = 14
+                });
+            }
+            else
+            {
+                // Line contains one or more URLs — split into text + link segments
+                var linePanel = new WrapPanel { Orientation = Orientation.Horizontal };
+                int cursor = 0;
+
+                foreach (Match match in matches)
+                {
+                    // Text before the URL
+                    if (match.Index > cursor)
+                    {
+                        linePanel.Children.Add(new TextBlock
+                        {
+                            Text = trimmed.Substring(cursor, match.Index - cursor),
+                            TextWrapping = TextWrapping.Wrap,
+                            Foreground = Brushes.White,
+                            FontSize = 14,
+                            VerticalAlignment = VerticalAlignment.Center
+                        });
+                    }
+
+                    // The URL as a clickable button styled like a hyperlink
+                    var url = match.Value;
+                    var link = new Button
+                    {
+                        Content = url,
+                        Foreground = new SolidColorBrush(Color.Parse("#38BDF8")),
+                        Background = Brushes.Transparent,
+                        BorderThickness = new Thickness(0),
+                        Padding = new Thickness(0),
+                        Cursor = new Avalonia.Input.Cursor(Avalonia.Input.StandardCursorType.Hand),
+                        FontSize = 14,
+                        VerticalAlignment = VerticalAlignment.Center
+                    };
+                    link.Click += (_, __) => OpenUrl(url);
+                    linePanel.Children.Add(link);
+
+                    cursor = match.Index + match.Length;
+                }
+
+                // Any remaining text after the last URL
+                if (cursor < trimmed.Length)
+                {
+                    linePanel.Children.Add(new TextBlock
+                    {
+                        Text = trimmed.Substring(cursor),
+                        TextWrapping = TextWrapping.Wrap,
+                        Foreground = Brushes.White,
+                        FontSize = 14,
+                        VerticalAlignment = VerticalAlignment.Center
+                    });
+                }
+
+                panel.Children.Add(linePanel);
+            }
+        }
+
+        return panel;
+    }
+
+    private static Window BuildWindow(string message)
+    {
+        var title = new TextBlock
+        {
+            Text = "",
+            FontSize = 22,
+            FontWeight = FontWeight.Bold,
+            Foreground = Brushes.White,
+            Margin = new Thickness(0, 0, 0, 12)
+        };
+
+        var contentPanel = BuildContentPanel(message);
+
+        var scrollViewer = new ScrollViewer
+        {
+            Content = contentPanel,
+            MinHeight = 220,
+            Background = new SolidColorBrush(Color.Parse("#111827")),
+        };
+        ScrollViewer.SetVerticalScrollBarVisibility(scrollViewer, ScrollBarVisibility.Auto);
+        ScrollViewer.SetHorizontalScrollBarVisibility(scrollViewer, ScrollBarVisibility.Disabled);
+
+        var scrollBorder = new Border
+        {
+            Child = scrollViewer,
+            Background = new SolidColorBrush(Color.Parse("#111827")),
+            BorderBrush = new SolidColorBrush(Color.Parse("#374151")),
+            BorderThickness = new Thickness(1),
+            CornerRadius = new CornerRadius(8),
+            Padding = new Thickness(10)
+        };
+
+        var closeBtn = new Button
+        {
+            Content = "Close",
+            Width = 110,
+            Height = 38,
+            HorizontalAlignment = HorizontalAlignment.Right
+        };
+
+        var root = new StackPanel
+        {
+            Spacing = 12,
+            Margin = new Thickness(20),
+            Children =
+            {
+                title,
+                scrollBorder,
+                closeBtn
+            }
+        };
+
+        var window = new Window
+        {
+            Width = 560,
+            Height = 380,
+            CanResize = false,
+            WindowStartupLocation = WindowStartupLocation.CenterOwner,
+            Title = "Announcement",
+            Background = new SolidColorBrush(Color.Parse("#0F172A")),
+            Content = root
+        };
+
+        closeBtn.Click += (_, __) => window.Close();
+
+        return window;
+    }
+}
