@@ -1,11 +1,9 @@
-# Load the Windows Forms assembly to enable message boxes
+# Load the Windows Forms assembly to enable the graphical message box
 Add-Type -AssemblyName System.Windows.Forms
 
-# Show the notification pop-up
-[System.Windows.Forms.MessageBox]::Show("I will send you to YouTube.", "Notification", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information)
+# Define the message and the title of the pop-up window
+$message = "IM DONE HI hellow this is a test"
+$title = "Notification"
 
-# Define the YouTube URL
-$youtubeLink = "https://youtu.be/CoKIphT7xrI?si=DY-IiMF0fc0u-bMH"
-
-# Open the URL in the default web browser
-Start-Process $youtubeLink
+# Display the pop-up window
+[System.Windows.Forms.MessageBox]::Show($message, $title, [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information)
