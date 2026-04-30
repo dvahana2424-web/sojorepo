@@ -1,20 +1,16 @@
-⚠️ IMPORTANT: UNLOCK MODE UPDATE ⚠️
+📢 UPDATE: ISSUE FIXED! ✅
 
-We are investigating why UNLOCK MODE is failing on some devices/regions. Most users are online, but new installs and Steam reinstalls are currently hit-or-miss. 🛠️
+The UNLOCK MODE issue is now resolved and we are currently in observation mode. Everything should be back to normal! 🛠️
 
-Status: Investigating 🔍
+🛠️ Still seeing "PURCHASE" on Steam?
+If the game isn't unlocking yet, just follow these quick steps:
 
-Affecting: New/Reinstalled Steam users
+Click on OTHER FUNCTION.
 
-Hang tight while we find a fix! 🔧✨
+Let it Automatically Fix the configuration.
 
-🚫 ADVICE: Do NOT uninstall or reinstall your Steam client for now, as you may lose access! 🔍🛠️
+Re-add the game and Restart Steam. 🔄
 
-🛠️ Workarounds while you wait for official fix:
-
-To Unlock: Use UNLOCK MODE 2 for installed games.
-
-To Download: Use DOWNLOAD MODE 2 via our dedicated installer.
 
 
 
