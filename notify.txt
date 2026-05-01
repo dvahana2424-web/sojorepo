@@ -1,16 +1,24 @@
-📢 UPDATE: ISSUE FIXED! ✅
+⚠️ STATUS: INVESTIGATING ⚠️
+We are currently tracking a critical issue where Payload Generation is failing. This prevents the Hammer Unlock Mode from functioning on fresh setups.
 
-The UNLOCK MODE issue is now resolved and we are currently in observation mode. Everything should be back to normal! 🛠️
+Current Impact
+New Installations: ❌ Currently failing.
 
-🛠️ Still seeing "PURCHASE" on Steam?
-If the game isn't unlocking yet, just follow these quick steps:
+Steam Reinstalls: ❌ Currently failing.
 
-Click on OTHER FUNCTION.
+New Devices: ❌ Currently failing.
 
-Let it Automatically Fix the configuration.
+Existing Users: ✅ Should continue to work normally.
 
-Re-add the game and Restart Steam. 🔄
+🛑 CRITICAL ADVICE
+DO NOT uninstall or reinstall your Steam client at this time. Doing so may cause you to lose access to the service until a fix is deployed.
 
+🛠️ TEMPORARY WORKAROUNDS
+While we work on a permanent solution, please use the following methods:
+
+To Unlock Games: Use UNLOCK MODE 2 for all currently installed titles.
+
+To Download Games: Use DOWNLOAD MODE 2 via the dedicated installer.
 
 
 
