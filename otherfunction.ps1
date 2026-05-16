@@ -57,6 +57,36 @@ function Write-Info([string]$Message) { Write-Host "[INFO] $Message" -Foreground
 function Write-WarnText([string]$Message) { Write-Host "[WARN] $Message" -ForegroundColor Yellow }
 function Write-Ok([string]$Message) { Write-Host "[ OK ] $Message" -ForegroundColor Green }
 
+function Write-DownloadLine([string]$Text) {
+    try {
+        if ($null -eq $script:DownloadLineTop) {
+            $script:DownloadLineTop = [Console]::CursorTop
+        }
+        $width = [Math]::Max(40, [Console]::WindowWidth - 1)
+        if ($Text.Length -gt $width) { $Text = $Text.Substring(0, $width) }
+        [Console]::SetCursorPosition(0, $script:DownloadLineTop)
+        [Console]::Write($Text.PadRight($width))
+    } catch {
+        Write-Host $Text
+    }
+}
+
+function Finish-DownloadLine([string]$Text) {
+    try {
+        if ($null -eq $script:DownloadLineTop) {
+            Write-Host $Text
+            return
+        }
+        $width = [Math]::Max(40, [Console]::WindowWidth - 1)
+        if ($Text.Length -gt $width) { $Text = $Text.Substring(0, $width) }
+        [Console]::SetCursorPosition(0, $script:DownloadLineTop)
+        [Console]::WriteLine($Text.PadRight($width))
+        $script:DownloadLineTop = $null
+    } catch {
+        Write-Host $Text
+    }
+}
+
 function Wait-ForKey {
     Write-Host ""
     Write-Host "  Press any key to close..." -ForegroundColor DarkGray
@@ -344,19 +374,18 @@ function Start-ParallelDownload {
             $filePct = if ($totalFiles -gt 0) { [Math]::Min(100.0, ($filesDone * 100.0) / $totalFiles) } else { 100.0 }
             $bytePct = if ($knownTotal -gt 0) { [Math]::Min(100.0, ($downloaded * 100.0) / $knownTotal) } else { $filePct }
             $eta = if ($speed -gt 0 -and $knownTotal -gt $downloaded) { ($knownTotal - $downloaded) / $speed } else { [double]::PositiveInfinity }
-            $status = "Files $filesDone/$totalFiles | Size $(Format-Bytes ([long]$downloaded)) / $(Format-Bytes ([long]$knownTotal)) | Speed $(Format-Bytes ([long]$speed))/s | ETA $(Format-Eta $eta)"
-            Write-Progress -Id 0 -Activity "Downloading Steam packages" -Status $status -PercentComplete ([int]$bytePct)
-
-            foreach ($item in $statusItems) {
-                $idx = [int]$item.index
-                $total = [long]$item.total
-                $done = [long]$item.downloaded
-                $pct = if ($total -gt 0) { [Math]::Min(100, [int](($done * 100.0) / $total)) } elseif ($item.state -eq "Done") { 100 } else { 0 }
-                $name = Get-ShortFileName ([string]$item.file)
-                $childStatus = "$($item.state) | $(Format-Bytes $done)"
-                if ($total -gt 0) { $childStatus += " / $(Format-Bytes $total)" }
-                Write-Progress -Id ($idx + 1) -ParentId 0 -Activity ("{0:D2}. {1}" -f ($idx + 1), $name) -Status $childStatus -PercentComplete $pct
-            }
+            $barPct = if ($knownTotal -gt 0) { $bytePct } else { $filePct }
+            $line = "{0} Files {1}/{2} {3} {4}% | Size {5}/{6} | {7}/s | ETA {8}" -f `
+                @('|', '/', '-', '\')[[int]($sw.ElapsedMilliseconds / 250) % 4],
+                $filesDone,
+                $totalFiles,
+                (New-ProgressBar $barPct 22),
+                ("{0,6:N2}" -f $barPct),
+                (Format-Bytes ([long]$downloaded)),
+                (Format-Bytes ([long]$knownTotal)),
+                (Format-Bytes ([long]$speed)),
+                (Format-Eta $eta)
+            Write-DownloadLine $line
 
             $runningCount = @($jobs | Where-Object { $_.State -eq 'Running' -or $_.State -eq 'NotStarted' }).Count
             if ($filesFailed -gt 0) { break }
@@ -375,11 +404,6 @@ function Start-ParallelDownload {
                 Remove-Job -Job $j -Force -ErrorAction SilentlyContinue
             }
         }
-        for ($i = 1; $i -le $totalFiles; $i++) {
-            Write-Progress -Id $i -ParentId 0 -Activity "File $i" -Completed
-        }
-        Write-Progress -Id 0 -Activity "Downloading Steam packages" -Completed
-
         if ($jobErrors.Count -gt 0) {
             throw "Download failed: $($jobErrors[0])"
         }
@@ -389,9 +413,17 @@ function Start-ParallelDownload {
         }
 
         Set-Content -LiteralPath $completeMarker -Value ((Get-Date).ToUniversalTime().ToString("o")) -Encoding ASCII
+        $avgSpeed = $downloaded / [Math]::Max($sw.Elapsed.TotalSeconds, 0.001)
+        Finish-DownloadLine ("OK Files {0}/{0} {1} 100.00% | Size {2}/{2} | {3}/s | ETA 00:00" -f `
+            $totalFiles,
+            (New-ProgressBar 100 22),
+            (Format-Bytes ([long]$downloaded)),
+            (Format-Bytes ([long]$avgSpeed)))
         Write-Ok "Download complete."
     } finally {
-        Write-Progress -Id 0 -Activity "Downloading Steam packages" -Completed
+        if ($null -ne $script:DownloadLineTop) {
+            Finish-DownloadLine "Download stopped."
+        }
         if (Test-Path -LiteralPath $progressDir) { Remove-Item -LiteralPath $progressDir -Recurse -Force -ErrorAction SilentlyContinue }
     }
 }
