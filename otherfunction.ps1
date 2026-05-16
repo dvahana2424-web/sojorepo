@@ -1,7 +1,6 @@
 #Requires -Version 5.1
-# Paste this file to: https://github.com/dvahana2424-web/sojorepo/blob/main/otherfunction.ps1
-# Hammer "Other Functions" downloads to %TEMP%\otherfunction.ps1 and runs:
-#   powershell.exe -ExecutionPolicy Bypass -File "<temp>\otherfunction.ps1"  (as admin)
+# Standalone Steam one-click installer script.
+# No external project files or Python required.
 
 param(
     [Parameter(ValueFromRemainingArguments = $true)]
@@ -57,23 +56,6 @@ function Test-IsAdministrator {
 function Write-Info([string]$Message) { Write-Host "[INFO] $Message" -ForegroundColor Cyan }
 function Write-WarnText([string]$Message) { Write-Host "[WARN] $Message" -ForegroundColor Yellow }
 function Write-Ok([string]$Message) { Write-Host "[ OK ] $Message" -ForegroundColor Green }
-
-function Write-ProgressLine([string]$Text) {
-    $width = 118
-    if ($Text.Length -lt $width) { $Text = $Text + (' ' * ($width - $Text.Length)) }
-    try {
-        [Console]::Out.Write("`r$Text")
-    } catch {
-        Write-Host $Text
-    }
-}
-
-function End-ProgressLine() {
-    try {
-        [Console]::Out.WriteLine("")
-        [Console]::CursorVisible = $true
-    } catch { Write-Host "" }
-}
 
 function Wait-ForKey {
     Write-Host ""
@@ -161,7 +143,7 @@ function Invoke-HttpText {
         $msg = $_.Exception.Message
         if ($_.Exception.Response) {
             $code = [int]$_.Exception.Response.StatusCode
-            if ($code -eq 403) { throw "GitHub rate limit (HTTP 403). Wait and try Other Functions again." }
+            if ($code -eq 403) { throw "Manifest host rate limit (HTTP 403). Wait and try Other Functions again." }
             throw "HTTP $code : $msg"
         }
         throw "Network error: $msg"
@@ -209,6 +191,7 @@ function Ensure-Directory([string]$Path) {
 }
 
 function Test-CacheComplete([string]$Root, [string[]]$Files) {
+    if (-not (Test-Path -LiteralPath (Join-Path $Root "cache-complete.ok"))) { return $false }
     if (-not (Test-Path -LiteralPath (Join-Path $Root "steam_client_win64"))) { return $false }
     foreach ($f in $Files) {
         if (-not (Test-Path -LiteralPath (Join-Path $Root $f))) { return $false }
@@ -236,7 +219,14 @@ function Get-LocalClientVersion([string]$SteamDir) {
 function Start-ParallelDownload {
     param([string[]]$Files, [string]$Destination, [int]$MaxWorkers)
 
-    $missing = @($Files | Where-Object { -not (Test-Path -LiteralPath (Join-Path $Destination $_)) })
+    $completeMarker = Join-Path $Destination "cache-complete.ok"
+    if (Test-Path -LiteralPath $completeMarker) {
+        $missing = @($Files | Where-Object { -not (Test-Path -LiteralPath (Join-Path $Destination $_)) })
+    } else {
+        # A previous failed run can leave partial files. Without the marker, rebuild the cache.
+        $missing = @($Files)
+    }
+
     if ($missing.Count -eq 0) {
         Write-Ok "All package files already in cache."
         return
@@ -245,6 +235,10 @@ function Start-ParallelDownload {
     Write-Info "Downloading $($missing.Count) missing file(s)..."
     $progressFile = Join-Path $env:TEMP ("steam-dl-{0}.log" -f [guid]::NewGuid().ToString("N"))
     try {
+        if (Test-Path -LiteralPath $completeMarker) {
+            Remove-Item -LiteralPath $completeMarker -Force -ErrorAction SilentlyContinue
+        }
+
         $rawQueue = New-Object System.Collections.Queue
         foreach ($item in $missing) { $null = $rawQueue.Enqueue($item) }
         $queue = [System.Collections.Queue]::Synchronized($rawQueue)
@@ -263,6 +257,7 @@ function Start-ParallelDownload {
 
                     $url = "$BaseUrl/$fileName"
                     $outPath = Join-Path $Dest $fileName
+                    $partPath = "$outPath.part"
                     $downloaded = 0L
                     $total = 0L
                     $req = [System.Net.HttpWebRequest]::Create($url)
@@ -273,7 +268,7 @@ function Start-ParallelDownload {
                     try {
                         if ($resp.ContentLength -gt 0) { $total = [long]$resp.ContentLength }
                         $stream = $resp.GetResponseStream()
-                        $fs = [System.IO.File]::Create($outPath)
+                        $fs = [System.IO.File]::Create($partPath)
                         try {
                             $buf = New-Object byte[] (524288)
                             while ($true) {
@@ -284,28 +279,25 @@ function Start-ParallelDownload {
                             }
                         } finally { $fs.Dispose(); $stream.Dispose() }
                     } finally { $resp.Dispose() }
+                    Move-Item -LiteralPath $partPath -Destination $outPath -Force
                     $line = (@{ file = $fileName; downloaded = $downloaded; total = $total } | ConvertTo-Json -Compress)
                     Add-Content -LiteralPath $ProgressFile -Value $line -Encoding UTF8
                 }
             } -ArgumentList $queue, $Destination, $ClientBaseUrl, $progressFile, $UserAgent
         }
 
-        $spinner = @('|', '/', '-', '\')
-        $spin = 0
         $sw = [System.Diagnostics.Stopwatch]::StartNew()
         $totalFiles = $missing.Count
-        try { [Console]::CursorVisible = $false } catch { }
 
         while (($jobs | Where-Object { $_.State -eq 'Running' }).Count -gt 0) {
             $filesDone = 0
             $downloaded = 0L
-            $totalBytes = 0L
             $byFile = @{}
 
             foreach ($f in $missing) {
-                $p = Join-Path $Destination $f
-                if ((Test-Path -LiteralPath $p) -and ((Get-Item -LiteralPath $p).Length -gt 0)) {
-                    $filesDone++
+                $part = Join-Path $Destination "$f.part"
+                if (Test-Path -LiteralPath $part) {
+                    $downloaded += (Get-Item -LiteralPath $part).Length
                 }
             }
 
@@ -318,39 +310,28 @@ function Start-ParallelDownload {
                     } catch { }
                 }
             }
+            $filesDone = $byFile.Count
             foreach ($o in $byFile.Values) {
                 $downloaded += [long]$o.downloaded
-                $totalBytes += [long]$o.total
-            }
-            if ($filesDone -gt $downloaded -and $downloaded -eq 0) {
-                foreach ($f in $missing) {
-                    $p = Join-Path $Destination $f
-                    if (Test-Path -LiteralPath $p) { $downloaded += (Get-Item -LiteralPath $p).Length }
-                }
             }
 
             $elapsed = [Math]::Max($sw.Elapsed.TotalSeconds, 0.001)
             $speed = $downloaded / $elapsed
             $fp = if ($totalFiles -gt 0) { [Math]::Min(100.0, ($filesDone * 100.0) / $totalFiles) } else { 100.0 }
-            $bp = if ($totalBytes -gt 0) { [Math]::Min(100.0, ($downloaded * 100.0) / $totalBytes) } else { 0.0 }
-            $eta = if ($speed -gt 0 -and $totalBytes -gt $downloaded) { ($totalBytes - $downloaded) / $speed } else { [double]::PositiveInfinity }
-            $line = "{0} Files {1}/{2} {3} {4}% | Bytes {5} {6}% | {7}/s | ETA {8}" -f `
-                $spinner[$spin % 4], $filesDone, $totalFiles,
-                (New-ProgressBar $fp), ("{0,6:N2}" -f $fp),
-                (New-ProgressBar $bp), ("{0,6:N2}" -f $bp),
-                (Format-Bytes ([long]$speed)), (Format-Eta $eta)
-            Write-ProgressLine $line
-            $spin++
-            Start-Sleep -Milliseconds 150
+            $status = "Files $filesDone/$totalFiles | Downloaded $(Format-Bytes ([long]$downloaded)) | Speed $(Format-Bytes ([long]$speed))/s"
+            Write-Progress -Activity "Downloading Steam packages" -Status $status -PercentComplete ([int]$fp)
+            Start-Sleep -Milliseconds 300
         }
 
         foreach ($j in $jobs) {
             Receive-Job -Job $j -Wait -ErrorAction Stop | Out-Null
             Remove-Job -Job $j -Force -ErrorAction SilentlyContinue
         }
-        End-ProgressLine
+        Write-Progress -Activity "Downloading Steam packages" -Completed
+        Set-Content -LiteralPath $completeMarker -Value ((Get-Date).ToUniversalTime().ToString("o")) -Encoding ASCII
         Write-Ok "Download complete."
     } finally {
+        Write-Progress -Activity "Downloading Steam packages" -Completed
         if (Test-Path -LiteralPath $progressFile) { Remove-Item -LiteralPath $progressFile -Force -ErrorAction SilentlyContinue }
     }
 }
