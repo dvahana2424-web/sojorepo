@@ -120,7 +120,7 @@ function Show-InstallBanner {
     }
     Write-Host ""
     Write-Host "  ================================================================" -ForegroundColor DarkCyan
-    Write-Host "       STEAM ONE-CLICK INSTALLER (Hammer Other Functions)" -ForegroundColor White
+    Write-Host "       STEAM ONE-CLICK INSTALLER" -ForegroundColor White
     Write-Host "  ================================================================" -ForegroundColor DarkCyan
     Write-Host ""
     Write-Host "  Action          : $action" -ForegroundColor Yellow
@@ -222,177 +222,198 @@ function Get-LocalClientVersion([string]$SteamDir) {
     return $null
 }
 
+function Get-MissingPackageFiles {
+    param([string[]]$Files, [string]$Destination)
+    $list = New-Object System.Collections.Generic.List[string]
+    foreach ($f in $Files) {
+        $path = Join-Path $Destination $f
+        if ((Test-Path -LiteralPath $path) -and ((Get-Item -LiteralPath $path).Length -gt 0)) {
+            continue
+        }
+        $part = "$path.part"
+        if (Test-Path -LiteralPath $part) {
+            Remove-Item -LiteralPath $part -Force -ErrorAction SilentlyContinue
+        }
+        $list.Add($f)
+    }
+    return @($list)
+}
+
 function Start-ParallelDownload {
     param([string[]]$Files, [string]$Destination, [int]$MaxWorkers)
 
     $completeMarker = Join-Path $Destination "cache-complete.ok"
     if (Test-Path -LiteralPath $completeMarker) {
-        $missing = @($Files | Where-Object { -not (Test-Path -LiteralPath (Join-Path $Destination $_)) })
-    } else {
-        # A previous failed run can leave partial files. Without the marker, rebuild the cache.
-        $missing = @($Files)
+        Remove-Item -LiteralPath $completeMarker -Force -ErrorAction SilentlyContinue
     }
 
+    $missing = Get-MissingPackageFiles -Files $Files -Destination $Destination
     if ($missing.Count -eq 0) {
+        Set-Content -LiteralPath $completeMarker -Value ((Get-Date).ToUniversalTime().ToString("o")) -Encoding ASCII
         Write-Ok "All package files already in cache."
         return
     }
 
-    $parallelCount = [Math]::Min($MaxWorkers, $missing.Count)
-    Write-Info "Downloading $($missing.Count) file(s) in parallel ($parallelCount active download(s))..."
-    $progressDir = Join-Path $env:TEMP ("steam-dl-{0}" -f [guid]::NewGuid().ToString("N"))
+    $parallelCount = [Math]::Min([Math]::Max(1, $MaxWorkers), $missing.Count)
+    Write-Info "Downloading $($missing.Count) file(s) with $parallelCount parallel worker(s)..."
+
+    $sync = [hashtable]::Synchronized(@{
+            FilesDone        = 0
+            DownloadedBytes  = [long]0
+            TotalBytes       = [long]0
+            Lock             = New-Object object
+        })
+    $errors = [System.Collections.Concurrent.ConcurrentBag[string]]::new()
+
+    $pool = [runspacefactory]::CreateRunspacePool(1, $parallelCount)
+    $pool.Open()
+    $runspaces = New-Object System.Collections.Generic.List[object]
+
     try {
-        if (Test-Path -LiteralPath $completeMarker) {
-            Remove-Item -LiteralPath $completeMarker -Force -ErrorAction SilentlyContinue
-        }
-        Ensure-Directory -Path $progressDir
-
-        $totalFiles = $missing.Count
-
-        $rawQueue = New-Object System.Collections.Queue
-        for ($i = 0; $i -lt $totalFiles; $i++) {
-            $rawQueue.Enqueue([pscustomobject]@{
-                Index = $i
-                File  = $missing[$i]
-            }) | Out-Null
-        }
-        $queue = [System.Collections.Queue]::Synchronized($rawQueue)
-        $jobs = @()
-
-        for ($worker = 0; $worker -lt $parallelCount; $worker++) {
-            $jobs += Start-Job -ScriptBlock {
-                param($Q, $Dest, $BaseUrl, $ProgressDir, $Ua)
-
-                function Save-Status([string]$StatusPath, [int]$Index, [string]$FileName, [string]$State, [long]$Downloaded, [long]$Total) {
-                    $obj = @{
-                        index      = $Index
-                        file       = $FileName
-                        state      = $State
-                        downloaded = $Downloaded
-                        total      = $Total
-                    } | ConvertTo-Json -Compress
-                    Set-Content -LiteralPath $StatusPath -Value $obj -Encoding UTF8
-                }
-
-                while ($true) {
-                    $entry = $null
-                    [System.Threading.Monitor]::Enter($Q.SyncRoot)
-                    try {
-                        if ($Q.Count -gt 0) { $entry = $Q.Dequeue() }
-                    } finally {
-                        [System.Threading.Monitor]::Exit($Q.SyncRoot)
-                    }
-                    if ($null -eq $entry) { break }
-
-                    $Index = [int]$entry.Index
-                    $FileName = [string]$entry.File
-                    $StatusPath = Join-Path $ProgressDir ("{0:D2}.json" -f $Index)
-                    $url = "$BaseUrl/$FileName"
+        foreach ($fileName in $missing) {
+            $ps = [powershell]::Create()
+            $ps.RunspacePool = $pool
+            [void]$ps.AddScript({
+                    param($FileName, $Dest, $BaseUrl, $Ua, $Shared, $ErrBag)
                     $outPath = Join-Path $Dest $FileName
+                    if ((Test-Path -LiteralPath $outPath) -and ((Get-Item -LiteralPath $outPath).Length -gt 0)) {
+                        [System.Threading.Monitor]::Enter($Shared.Lock)
+                        try { $Shared.FilesDone++ } finally { [System.Threading.Monitor]::Exit($Shared.Lock) }
+                        return
+                    }
+
                     $partPath = "$outPath.part"
-                    $downloaded = 0L
-                    $total = 0L
+                    if (Test-Path -LiteralPath $partPath) {
+                        Remove-Item -LiteralPath $partPath -Force -ErrorAction SilentlyContinue
+                    }
+
+                    $url = "$BaseUrl/$FileName"
+                    $req = [System.Net.HttpWebRequest]::Create($url)
+                    $req.UserAgent = $Ua
+                    $req.Timeout = 120000
+                    $req.ReadWriteTimeout = 120000
+                    $resp = $null
+                    $stream = $null
+                    $fs = $null
 
                     try {
-                        if (Test-Path -LiteralPath $partPath) {
-                            Remove-Item -LiteralPath $partPath -Force -ErrorAction SilentlyContinue
-                        }
-                        Save-Status $StatusPath $Index $FileName "Starting" 0 0
-                        $req = [System.Net.HttpWebRequest]::Create($url)
-                        $req.UserAgent = $Ua
-                        $req.Timeout = 300000
-                        $req.ReadWriteTimeout = 300000
                         $resp = $req.GetResponse()
-                        try {
-                            if ($resp.ContentLength -gt 0) { $total = [long]$resp.ContentLength }
-                            Save-Status $StatusPath $Index $FileName "Downloading" 0 $total
-                            $stream = $resp.GetResponseStream()
-                            $fs = [System.IO.File]::Create($partPath)
-                            try {
-                                $buf = New-Object byte[] (512 * 1024)
-                                $lastStatus = [DateTime]::UtcNow
-                                while ($true) {
-                                    $read = $stream.Read($buf, 0, $buf.Length)
-                                    if ($read -le 0) { break }
-                                    $fs.Write($buf, 0, $read)
-                                    $downloaded += $read
-                                    if ((([DateTime]::UtcNow) - $lastStatus).TotalMilliseconds -ge 200) {
-                                        Save-Status $StatusPath $Index $FileName "Downloading" $downloaded $total
-                                        $lastStatus = [DateTime]::UtcNow
-                                    }
-                                }
-                            } finally { $fs.Dispose(); $stream.Dispose() }
-                        } finally { $resp.Dispose() }
-                        if ($total -gt 0 -and $downloaded -lt $total) {
-                            throw "Incomplete download for $FileName ($downloaded / $total bytes)."
+                        $total = 0L
+                        if ($resp.ContentLength -gt 0) {
+                            $total = [long]$resp.ContentLength
+                            [System.Threading.Monitor]::Enter($Shared.Lock)
+                            try { $Shared.TotalBytes += $total } finally { [System.Threading.Monitor]::Exit($Shared.Lock) }
                         }
+
+                        $stream = $resp.GetResponseStream()
+                        $fs = [System.IO.File]::Create($partPath)
+                        $buf = New-Object byte[] (512 * 1024)
+                        while ($true) {
+                            $read = $stream.Read($buf, 0, $buf.Length)
+                            if ($read -le 0) { break }
+                            $fs.Write($buf, 0, $read)
+                            [System.Threading.Monitor]::Enter($Shared.Lock)
+                            try { $Shared.DownloadedBytes += $read } finally { [System.Threading.Monitor]::Exit($Shared.Lock) }
+                        }
+                        $fs.Dispose()
+                        $fs = $null
+                        $stream.Dispose()
+                        $stream = $null
+                        $resp.Dispose()
+                        $resp = $null
+
+                        $finalLen = (Get-Item -LiteralPath $partPath).Length
+                        if ($total -gt 0 -and $finalLen -lt $total) {
+                            throw "Incomplete file ($finalLen / $total bytes)."
+                        }
+
                         Move-Item -LiteralPath $partPath -Destination $outPath -Force
-                        Save-Status $StatusPath $Index $FileName "Done" $downloaded $total
+                        [System.Threading.Monitor]::Enter($Shared.Lock)
+                        try { $Shared.FilesDone++ } finally { [System.Threading.Monitor]::Exit($Shared.Lock) }
                     } catch {
-                        Save-Status $StatusPath $Index $FileName "Failed" $downloaded $total
+                        if ($fs) { $fs.Dispose() }
+                        if ($stream) { $stream.Dispose() }
+                        if ($resp) { $resp.Dispose() }
                         if (Test-Path -LiteralPath $partPath) {
                             Remove-Item -LiteralPath $partPath -Force -ErrorAction SilentlyContinue
                         }
-                        throw
+                        $ErrBag.Add("$FileName : $($_.Exception.Message)")
                     }
-                }
-            } -ArgumentList $queue, $Destination, $ClientBaseUrl, $progressDir, $UserAgent
+                }).AddArgument($fileName).
+                AddArgument($Destination).
+                AddArgument($ClientBaseUrl).
+                AddArgument($UserAgent).
+                AddArgument($sync).
+                AddArgument($errors)
+            $runspaces.Add([pscustomobject]@{
+                    PS     = $ps
+                    Handle = $ps.BeginInvoke()
+                }) | Out-Null
         }
 
         $sw = [System.Diagnostics.Stopwatch]::StartNew()
+        $spin = 0
+        $lastBytes = [long]0
+        $lastProgressAt = [DateTime]::UtcNow
+        $maxWaitMinutes = 60
 
         while ($true) {
-            $filesDone = 0
-            $filesFailed = 0
-            $downloaded = 0L
-            $knownTotal = 0L
-            $statusItems = @()
+            $doneCount = @($runspaces | Where-Object { $_.Handle.IsCompleted }).Count
+            [System.Threading.Monitor]::Enter($sync.Lock)
+            try {
+                $filesDone = [int]$sync.FilesDone
+                $downloaded = [long]$sync.DownloadedBytes
+                $knownTotal = [long]$sync.TotalBytes
+            } finally {
+                [System.Threading.Monitor]::Exit($sync.Lock)
+            }
 
-            foreach ($statusFile in (Get-ChildItem -LiteralPath $progressDir -Filter "*.json" -ErrorAction SilentlyContinue | Sort-Object Name)) {
-                try {
-                    $o = Get-Content -LiteralPath $statusFile.FullName -Raw | ConvertFrom-Json
-                    $statusItems += $o
-                    if ($o.state -eq "Done") { $filesDone++ }
-                    if ($o.state -eq "Failed") { $filesFailed++ }
-                    $downloaded += [long]$o.downloaded
-                    $knownTotal += [long]$o.total
-                } catch { }
+            if ($downloaded -gt $lastBytes) {
+                $lastBytes = $downloaded
+                $lastProgressAt = [DateTime]::UtcNow
             }
 
             $elapsed = [Math]::Max($sw.Elapsed.TotalSeconds, 0.001)
             $speed = $downloaded / $elapsed
-            $filePct = if ($totalFiles -gt 0) { [Math]::Min(100.0, ($filesDone * 100.0) / $totalFiles) } else { 100.0 }
-            $bytePct = if ($knownTotal -gt 0) { [Math]::Min(100.0, ($downloaded * 100.0) / $knownTotal) } else { $filePct }
+            $filesPct = if ($missing.Count -gt 0) { ($filesDone * 100.0) / $missing.Count } else { 100.0 }
+            $bytesPct = if ($knownTotal -gt 0) { ($downloaded * 100.0) / $knownTotal } else { $filesPct }
             $eta = if ($speed -gt 0 -and $knownTotal -gt $downloaded) { ($knownTotal - $downloaded) / $speed } else { [double]::PositiveInfinity }
-            # Use file completion for the main bar. KnownTotal grows as workers open
-            # connections, so byte percent can show 100% too early.
-            $barPct = $filePct
-            $status = "Files $filesDone/$totalFiles | Size $(Format-Bytes ([long]$downloaded))/$(Format-Bytes ([long]$knownTotal)) | Speed $(Format-Bytes ([long]$speed))/s | ETA $(Format-Eta $eta)"
+            $barPct = [Math]::Min(100.0, $bytesPct)
+            $status = "{0} Files {1}/{2} {3} {4:N1}% | Bytes {5} {6:N1}% | {7}/s | ETA {8}" -f `
+                @('|', '/', '-', '\')[$spin % 4],
+                $filesDone,
+                $missing.Count,
+                (New-ProgressBar $filesPct 12),
+                $filesPct,
+                (New-ProgressBar $barPct 12),
+                $barPct,
+                (Format-Bytes ([long]$speed)),
+                (Format-Eta $eta)
             Write-Progress -Id 1 -Activity "Downloading Steam packages" -Status $status -PercentComplete ([int]$barPct)
+            $spin++
 
-            $runningCount = @($jobs | Where-Object { $_.State -eq 'Running' -or $_.State -eq 'NotStarted' }).Count
-            if ($filesFailed -gt 0) { break }
-            if ($filesDone -ge $totalFiles) { break }
-            if ($runningCount -eq 0) { break }
-            Start-Sleep -Milliseconds 300
-        }
-
-        $jobErrors = @()
-        foreach ($j in $jobs) {
-            try {
-                Receive-Job -Job $j -Wait -ErrorAction Stop | Out-Null
-            } catch {
-                $jobErrors += $_.Exception.Message
-            } finally {
-                Remove-Job -Job $j -Force -ErrorAction SilentlyContinue
+            if ($doneCount -ge $runspaces.Count) { break }
+            if ($sw.Elapsed.TotalMinutes -ge $maxWaitMinutes) {
+                throw "Download timed out after $maxWaitMinutes minutes."
             }
+            if ((([DateTime]::UtcNow) - $lastProgressAt).TotalSeconds -ge 180 -and $doneCount -lt $runspaces.Count) {
+                throw "Download stalled for 3 minutes. Check connection and run Other Functions again."
+            }
+            Start-Sleep -Milliseconds 120
         }
-        if ($jobErrors.Count -gt 0) {
-            throw "Download failed: $($jobErrors[0])"
+
+        foreach ($entry in $runspaces) {
+            try { $entry.PS.EndInvoke($entry.Handle) | Out-Null } catch { }
+            $entry.PS.Dispose()
         }
-        $stillMissing = @($Files | Where-Object { -not (Test-Path -LiteralPath (Join-Path $Destination $_)) })
+
+        if ($errors.Count -gt 0) {
+            throw "Download failed on $($errors.Count) file(s). First error: $($errors | Select-Object -First 1)"
+        }
+
+        $stillMissing = Get-MissingPackageFiles -Files $Files -Destination $Destination
         if ($stillMissing.Count -gt 0) {
-            throw "Download finished but cache is incomplete ($($stillMissing.Count) missing). Please run Other Functions again."
+            throw "Cache incomplete ($($stillMissing.Count) file(s) still missing)."
         }
 
         Set-Content -LiteralPath $completeMarker -Value ((Get-Date).ToUniversalTime().ToString("o")) -Encoding ASCII
@@ -400,7 +421,8 @@ function Start-ParallelDownload {
         Write-Ok "Download complete."
     } finally {
         Write-Progress -Id 1 -Activity "Downloading Steam packages" -Completed
-        if (Test-Path -LiteralPath $progressDir) { Remove-Item -LiteralPath $progressDir -Recurse -Force -ErrorAction SilentlyContinue }
+        $pool.Close()
+        $pool.Dispose()
     }
 }
 
