@@ -18,6 +18,12 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
+# True when run as %TEMP%\otherfunction.ps1 via Hammer "Other Functions" (already elevated)
+$script:HammerLaunch = (
+    ($env:HAMMER_LAUNCH -eq '1') -or
+    ($PSCommandPath -like '*otherfunction*')
+)
+
 # TLS 1.2 required for GitHub/Steam CDN on older Windows PowerShell
 try {
     [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
@@ -268,8 +274,8 @@ function Start-ParallelDownload {
                             }
                         } finally { $fs.Dispose(); $stream.Dispose() }
                     } finally { $resp.Dispose() }
-                    (@{ downloaded = $downloaded; total = $total; done = 1 } | ConvertTo-Json -Compress) |
-                        Add-Content -LiteralPath $ProgressFile -Value $_ -Encoding UTF8
+                    $line = (@{ downloaded = $downloaded; total = $total; done = 1 } | ConvertTo-Json -Compress)
+                    Add-Content -LiteralPath $ProgressFile -Value $line -Encoding UTF8
                 }
             } -ArgumentList $queue, $Destination, $ClientBaseUrl, $progressFile, $UserAgent
         }
@@ -377,6 +383,9 @@ $SteamPath = Resolve-DefaultSteamPath
 $CacheRoot = Join-Path $WorkDir $TargetVersion
 
 if (-not (Test-IsAdministrator)) {
+    if ($script:HammerLaunch) {
+        throw "Administrator is required. In Hammer, click Other Functions again and choose Yes on the UAC (admin) prompt."
+    }
     if ([string]::IsNullOrWhiteSpace($PSCommandPath)) {
         Write-WarnText "Run this script from a saved .ps1 file as Administrator (paste-only mode cannot auto-elevate)."
     } else {
