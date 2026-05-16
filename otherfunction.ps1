@@ -1,48 +1,52 @@
 #Requires -Version 5.1
-<#
-.SYNOPSIS
-    Standalone one-click Steam Stable Client installer (build 1778281814).
-
-.NOTES
-    - Single .ps1 only: no Python, no other project files, no pre-made steam-cache folder.
-    - Requires: Windows PowerShell 5.1+, Steam installed, internet, Administrator (auto-requested).
-    - Cache is created automatically under %LOCALAPPDATA%\SteamStableInstaller\steam-cache
-    - Save this file anywhere and run: Right-click -> Run with PowerShell (or run as Admin).
-#>
+# Paste this file to: https://github.com/dvahana2424-web/sojorepo/blob/main/otherfunction.ps1
+# Hammer "Other Functions" downloads to %TEMP%\otherfunction.ps1 and runs:
+#   powershell.exe -ExecutionPolicy Bypass -File "<temp>\otherfunction.ps1"  (as admin)
 
 param(
     [Parameter(ValueFromRemainingArguments = $true)]
     [object[]]$Ignored
 )
 
+$script:HammerLaunch = $true
+$script:SelfPath = $PSCommandPath
+if ([string]::IsNullOrWhiteSpace($script:SelfPath)) {
+    $script:SelfPath = $MyInvocation.MyCommand.Path
+}
+
+# Re-run once with -NoProfile (Hammer does not pass it; profiles can break the installer)
+if ($env:STEAM_INSTALLER_NOPROFILE -ne '1' -and -not [string]::IsNullOrWhiteSpace($script:SelfPath) -and (Test-Path -LiteralPath $script:SelfPath)) {
+    $env:STEAM_INSTALLER_NOPROFILE = '1'
+    $childArgs = "-NoProfile -ExecutionPolicy Bypass -File `"$($script:SelfPath)`""
+    try {
+        $proc = Start-Process -FilePath "powershell.exe" -ArgumentList $childArgs -Wait -PassThru -WindowStyle Normal
+        $code = 0
+        if ($null -ne $proc -and $null -ne $proc.ExitCode) { $code = $proc.ExitCode }
+        exit $code
+    } catch {
+        Write-Host "[WARN] NoProfile relaunch failed, continuing in current session..." -ForegroundColor Yellow
+    }
+}
+
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
-# True when run as %TEMP%\otherfunction.ps1 via Hammer "Other Functions" (already elevated)
-$script:HammerLaunch = (
-    ($env:HAMMER_LAUNCH -eq '1') -or
-    ($PSCommandPath -like '*otherfunction*')
-)
-
-# TLS 1.2 required for GitHub/Steam CDN on older Windows PowerShell
 try {
     [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
 } catch { }
 
-# --- Pinned target (Unlock Mode 3 stable) ---
 $TargetVersion   = "1778281814"
 $BetaBranch      = "Stable Client"
 $UnlockModeLabel = "Unlock Mode 3 (Stable)"
 $Workers         = 12
 $ServerPort      = 1666
-# SteamTracking commit for build 1778281814 (avoids scanning thousands of GitHub commits)
 $PinnedCommitSha = "e13adfc596d92cea6ff41f26a69d925c35848428"
 
 $RepoOwner     = "SteamTracking"
 $RepoName      = "SteamTracking"
 $ManifestPath  = "ClientManifest/steam_client_win64"
 $ClientBaseUrl = "https://client-update.fastly.steamstatic.com"
-$UserAgent     = "steam-downgrader-powershell/3.1"
+$UserAgent     = "hammer-otherfunction-steam-installer/1.0"
 
 function Test-IsAdministrator {
     $id = [Security.Principal.WindowsIdentity]::GetCurrent()
@@ -53,6 +57,35 @@ function Test-IsAdministrator {
 function Write-Info([string]$Message) { Write-Host "[INFO] $Message" -ForegroundColor Cyan }
 function Write-WarnText([string]$Message) { Write-Host "[WARN] $Message" -ForegroundColor Yellow }
 function Write-Ok([string]$Message) { Write-Host "[ OK ] $Message" -ForegroundColor Green }
+
+function Write-ProgressLine([string]$Text) {
+    $width = 118
+    if ($Text.Length -lt $width) { $Text = $Text + (' ' * ($width - $Text.Length)) }
+    try {
+        [Console]::Out.Write("`r$Text")
+    } catch {
+        Write-Host $Text
+    }
+}
+
+function End-ProgressLine() {
+    try {
+        [Console]::Out.WriteLine("")
+        [Console]::CursorVisible = $true
+    } catch { Write-Host "" }
+}
+
+function Wait-ForKey {
+    Write-Host ""
+    Write-Host "  Press any key to close..." -ForegroundColor DarkGray
+    try {
+        if ($Host.Name -eq 'ConsoleHost') {
+            $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown")
+            return
+        }
+    } catch { }
+    try { cmd /c pause | Out-Null } catch { Start-Sleep -Seconds 8 }
+}
 
 function Resolve-DefaultSteamPath {
     foreach ($p in @(
@@ -99,10 +132,9 @@ function Show-InstallBanner {
     }
     Write-Host ""
     Write-Host "  ================================================================" -ForegroundColor DarkCyan
-    Write-Host "       STEAM ONE-CLICK INSTALLER" -ForegroundColor White
+    Write-Host "       STEAM ONE-CLICK INSTALLER (Hammer Other Functions)" -ForegroundColor White
     Write-Host "  ================================================================" -ForegroundColor DarkCyan
     Write-Host ""
-    Write-Host "  Starting automatically..." -ForegroundColor Green
     Write-Host "  Action          : $action" -ForegroundColor Yellow
     Write-Host "  Beta Branch     : $BetaBranch" -ForegroundColor White
     Write-Host "  Target Version  : $TargetVersion" -ForegroundColor Green
@@ -115,31 +147,24 @@ function Show-InstallBanner {
         Write-Host "  Installed Now   : (unknown)" -ForegroundColor DarkYellow
     }
     Write-Host ""
-    Write-Host "  Uses cache when ready, downloads only missing files, then applies." -ForegroundColor Cyan
-    Write-Host "  steam.cfg will block automatic updates after install." -ForegroundColor Cyan
     Write-Host "  ================================================================" -ForegroundColor DarkCyan
     Write-Host ""
 }
 
 function Invoke-HttpText {
-    param(
-        [string]$Url,
-        [int]$TimeoutSec = 120
-    )
+    param([string]$Url, [int]$TimeoutSec = 120)
     try {
         $resp = Invoke-WebRequest -Uri $Url -Headers @{ "User-Agent" = $UserAgent } `
             -UseBasicParsing -TimeoutSec $TimeoutSec
-        return $resp.Content
+        return [string]$resp.Content
     } catch {
         $msg = $_.Exception.Message
         if ($_.Exception.Response) {
             $code = [int]$_.Exception.Response.StatusCode
-            if ($code -eq 403) {
-                throw "GitHub blocked the request (HTTP 403 rate limit). Wait 30-60 minutes and run again."
-            }
-            throw "HTTP $code for $Url : $msg"
+            if ($code -eq 403) { throw "GitHub rate limit (HTTP 403). Wait and try Other Functions again." }
+            throw "HTTP $code : $msg"
         }
-        throw "Network error for $Url : $msg"
+        throw "Network error: $msg"
     }
 }
 
@@ -156,12 +181,8 @@ function Get-VersionFromManifest([string]$ManifestText) {
 
 function Get-FilesFromManifest([string]$ManifestText) {
     $seen = @{}
-    foreach ($m in [regex]::Matches($ManifestText, '"file"\s+"(?<f>[^"]+)"')) {
-        $seen[$m.Groups["f"].Value] = $true
-    }
-    foreach ($m in [regex]::Matches($ManifestText, '"zipvz"\s+"(?<z>[^"]+)"')) {
-        $seen[$m.Groups["z"].Value] = $true
-    }
+    foreach ($m in [regex]::Matches($ManifestText, '"file"\s+"(?<f>[^"]+)"')) { $seen[$m.Groups["f"].Value] = $true }
+    foreach ($m in [regex]::Matches($ManifestText, '"zipvz"\s+"(?<z>[^"]+)"')) { $seen[$m.Groups["z"].Value] = $true }
     return @($seen.Keys | Sort-Object)
 }
 
@@ -171,21 +192,16 @@ function Resolve-Manifest {
         $text = Get-Content -LiteralPath $cached -Raw
         if ((Get-VersionFromManifest -ManifestText $text) -eq $TargetVersion) {
             Write-Info "Using cached manifest."
-            return [pscustomobject]@{ Text = $text; CommitSha = "cache"; CommitDate = (Get-Item $cached).LastWriteTimeUtc }
+            return [pscustomobject]@{ Text = $text; CommitSha = "cache" }
         }
     }
     Write-Info "Downloading manifest for build $TargetVersion (1 request)..."
     $text = Get-ManifestAtRef -Ref $PinnedCommitSha
-    $ver = Get-VersionFromManifest -ManifestText $text
-    if ($ver -ne $TargetVersion) {
-        throw "Pinned manifest version is $ver but expected $TargetVersion. Update PinnedCommitSha in the script."
+    if ((Get-VersionFromManifest -ManifestText $text) -ne $TargetVersion) {
+        throw "Manifest version mismatch for build $TargetVersion."
     }
-    Write-Ok "Manifest loaded from SteamTracking."
-    return [pscustomobject]@{
-        Text       = $text
-        CommitSha  = $PinnedCommitSha
-        CommitDate = (Get-Date).ToUniversalTime()
-    }
+    Write-Ok "Manifest loaded."
+    return [pscustomobject]@{ Text = $text; CommitSha = $PinnedCommitSha }
 }
 
 function Ensure-Directory([string]$Path) {
@@ -205,12 +221,6 @@ function Write-CacheArtifacts([string]$Root, [string]$ManifestText, [string[]]$F
     Set-Content -LiteralPath (Join-Path $Root "steam_client_win64") -Value $ManifestText -Encoding UTF8 -NoNewline
     Set-Content -LiteralPath (Join-Path $Root "steam_client_publicbeta_win64") -Value $ManifestText -Encoding UTF8 -NoNewline
     $Files | ForEach-Object { "$ClientBaseUrl/$_" } | Set-Content -LiteralPath (Join-Path $Root "sources.txt") -Encoding ASCII
-    @{
-        version    = $TargetVersion
-        betaBranch = $BetaBranch
-        unlockMode = $UnlockModeLabel
-        cachedAt   = (Get-Date).ToUniversalTime().ToString("o")
-    } | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $Root "cache-meta.json") -Encoding UTF8
 }
 
 function Get-LocalClientVersion([string]$SteamDir) {
@@ -232,7 +242,7 @@ function Start-ParallelDownload {
         return
     }
 
-    Write-Info "Downloading $($missing.Count) missing file(s) ($MaxWorkers parallel workers)..."
+    Write-Info "Downloading $($missing.Count) missing file(s)..."
     $progressFile = Join-Path $env:TEMP ("steam-dl-{0}.log" -f [guid]::NewGuid().ToString("N"))
     try {
         $rawQueue = New-Object System.Collections.Queue
@@ -274,7 +284,7 @@ function Start-ParallelDownload {
                             }
                         } finally { $fs.Dispose(); $stream.Dispose() }
                     } finally { $resp.Dispose() }
-                    $line = (@{ downloaded = $downloaded; total = $total; done = 1 } | ConvertTo-Json -Compress)
+                    $line = (@{ file = $fileName; downloaded = $downloaded; total = $total } | ConvertTo-Json -Compress)
                     Add-Content -LiteralPath $ProgressFile -Value $line -Encoding UTF8
                 }
             } -ArgumentList $queue, $Destination, $ClientBaseUrl, $progressFile, $UserAgent
@@ -284,42 +294,61 @@ function Start-ParallelDownload {
         $spin = 0
         $sw = [System.Diagnostics.Stopwatch]::StartNew()
         $totalFiles = $missing.Count
+        try { [Console]::CursorVisible = $false } catch { }
 
         while (($jobs | Where-Object { $_.State -eq 'Running' }).Count -gt 0) {
             $filesDone = 0
             $downloaded = 0L
             $totalBytes = 0L
+            $byFile = @{}
+
+            foreach ($f in $missing) {
+                $p = Join-Path $Destination $f
+                if ((Test-Path -LiteralPath $p) -and ((Get-Item -LiteralPath $p).Length -gt 0)) {
+                    $filesDone++
+                }
+            }
+
             if (Test-Path -LiteralPath $progressFile) {
                 foreach ($ln in (Get-Content -LiteralPath $progressFile -ErrorAction SilentlyContinue)) {
                     if ([string]::IsNullOrWhiteSpace($ln)) { continue }
                     try {
                         $o = $ln | ConvertFrom-Json
-                        $filesDone += [int]$o.done
-                        $downloaded += [long]$o.downloaded
-                        $totalBytes += [long]$o.total
+                        if ($o.file) { $byFile[[string]$o.file] = $o }
                     } catch { }
                 }
             }
+            foreach ($o in $byFile.Values) {
+                $downloaded += [long]$o.downloaded
+                $totalBytes += [long]$o.total
+            }
+            if ($filesDone -gt $downloaded -and $downloaded -eq 0) {
+                foreach ($f in $missing) {
+                    $p = Join-Path $Destination $f
+                    if (Test-Path -LiteralPath $p) { $downloaded += (Get-Item -LiteralPath $p).Length }
+                }
+            }
+
             $elapsed = [Math]::Max($sw.Elapsed.TotalSeconds, 0.001)
             $speed = $downloaded / $elapsed
-            $fp = if ($totalFiles -gt 0) { ($filesDone * 100.0) / $totalFiles } else { 100.0 }
-            $bp = if ($totalBytes -gt 0) { ($downloaded * 100.0) / $totalBytes } else { 0.0 }
-            $eta = if ($speed -gt 0 -and $totalBytes -gt 0) { ($totalBytes - $downloaded) / $speed } else { [double]::PositiveInfinity }
+            $fp = if ($totalFiles -gt 0) { [Math]::Min(100.0, ($filesDone * 100.0) / $totalFiles) } else { 100.0 }
+            $bp = if ($totalBytes -gt 0) { [Math]::Min(100.0, ($downloaded * 100.0) / $totalBytes) } else { 0.0 }
+            $eta = if ($speed -gt 0 -and $totalBytes -gt $downloaded) { ($totalBytes - $downloaded) / $speed } else { [double]::PositiveInfinity }
             $line = "{0} Files {1}/{2} {3} {4}% | Bytes {5} {6}% | {7}/s | ETA {8}" -f `
                 $spinner[$spin % 4], $filesDone, $totalFiles,
                 (New-ProgressBar $fp), ("{0,6:N2}" -f $fp),
                 (New-ProgressBar $bp), ("{0,6:N2}" -f $bp),
                 (Format-Bytes ([long]$speed)), (Format-Eta $eta)
-            Write-Host "`r$line" -NoNewline -ForegroundColor Cyan
+            Write-ProgressLine $line
             $spin++
-            Start-Sleep -Milliseconds 120
+            Start-Sleep -Milliseconds 150
         }
 
         foreach ($j in $jobs) {
             Receive-Job -Job $j -Wait -ErrorAction Stop | Out-Null
             Remove-Job -Job $j -Force -ErrorAction SilentlyContinue
         }
-        Write-Host ""
+        End-ProgressLine
         Write-Ok "Download complete."
     } finally {
         if (Test-Path -LiteralPath $progressFile) { Remove-Item -LiteralPath $progressFile -Force -ErrorAction SilentlyContinue }
@@ -334,8 +363,7 @@ function Stop-SteamProcesses {
 
 function Set-SteamCfg([string]$InstallDir) {
     $cfg = Join-Path $InstallDir "steam.cfg"
-    @("BootStrapperInhibitAll=enable", "BootStrapperForceSelfUpdate=disable") |
-        Set-Content -LiteralPath $cfg -Encoding ASCII
+    @("BootStrapperInhibitAll=enable", "BootStrapperForceSelfUpdate=disable") | Set-Content -LiteralPath $cfg -Encoding ASCII
     Write-Ok "Updates locked: $cfg"
 }
 
@@ -367,7 +395,7 @@ function Start-LocalPackageServer([string]$RootDir, [int]$Port) {
 
 function Invoke-SteamApply([string]$SteamExe, [int]$Port) {
     $steamDir = Split-Path -Parent $SteamExe
-    Write-Info "Applying Steam packages (upgrade/downgrade to $TargetVersion)..."
+    Write-Info "Applying Steam packages to build $TargetVersion..."
     $p = Start-Process -FilePath $SteamExe -WorkingDirectory $steamDir -PassThru -Wait -ArgumentList @(
         "-clearbeta", "-textmode", "-forcesteamupdate", "-forcepackagedownload",
         "-overridepackageurl", "http://localhost:$Port/", "-exitsteam"
@@ -377,35 +405,18 @@ function Invoke-SteamApply([string]$SteamExe, [int]$Port) {
     }
 }
 
-# --- Paths (standalone: cache in LocalAppData, not next to this repo) ---
+# --- Main ---
 $WorkDir   = Join-Path $env:LOCALAPPDATA "SteamStableInstaller\steam-cache"
 $SteamPath = Resolve-DefaultSteamPath
 $CacheRoot = Join-Path $WorkDir $TargetVersion
 
-if (-not (Test-IsAdministrator)) {
-    if ($script:HammerLaunch) {
-        throw "Administrator is required. In Hammer, click Other Functions again and choose Yes on the UAC (admin) prompt."
-    }
-    if ([string]::IsNullOrWhiteSpace($PSCommandPath)) {
-        Write-WarnText "Run this script from a saved .ps1 file as Administrator (paste-only mode cannot auto-elevate)."
-    } else {
-        Write-Host ""
-        Write-Host "  Requesting Administrator rights for Steam install..." -ForegroundColor Yellow
-        $argList = "-NoProfile -ExecutionPolicy Bypass -File `"$PSCommandPath`""
-        try {
-            $elevated = Start-Process -FilePath "powershell.exe" -Verb RunAs -ArgumentList $argList -PassThru -Wait
-            if ($null -ne $elevated.ExitCode) { exit $elevated.ExitCode }
-            exit 0
-        } catch {
-            Write-WarnText "Could not elevate. Continuing without admin (apply may fail)."
-        }
-    }
-}
-
-# ===================== ONE-CLICK MAIN =====================
 try {
+    if (-not (Test-IsAdministrator)) {
+        throw "Administrator required. Click Other Functions again and press Yes on the Windows UAC prompt."
+    }
+
     if (-not (Test-Path -LiteralPath $SteamPath)) {
-        throw "steam.exe not found at: $SteamPath`nInstall Steam first, then run this again."
+        throw "steam.exe not found at: $SteamPath`nInstall Steam first."
     }
 
     $steamDir = Split-Path -Parent $SteamPath
@@ -422,7 +433,7 @@ try {
     } else {
         Start-ParallelDownload -Files $files -Destination $CacheRoot -MaxWorkers $Workers
         if (-not (Test-CacheComplete -Root $CacheRoot -Files $files)) {
-            throw "Cache incomplete after download. Check your internet connection and retry."
+            throw "Download incomplete. Check internet and run Other Functions again."
         }
     }
 
@@ -441,31 +452,25 @@ try {
         if ($after) {
             Write-Info "Steam after:  $after"
             if ($after -eq $TargetVersion) {
-                Write-Ok "Done. Steam is on $TargetVersion ($BetaBranch). You can start Steam."
+                Write-Ok "Done. Steam is on $TargetVersion ($BetaBranch)."
             } else {
-                Write-WarnText "Expected $TargetVersion but read $after. Try running the installer again."
+                Write-WarnText "Expected $TargetVersion but read $after. Run Other Functions again."
             }
         } else {
-            Write-WarnText "Install finished. Start Steam once, then verify version in Settings."
+            Write-WarnText "Install finished. Start Steam once to verify version."
         }
     } finally {
         Stop-Job -Job $server -ErrorAction SilentlyContinue | Out-Null
         Remove-Job -Job $server -Force -ErrorAction SilentlyContinue | Out-Null
     }
 
-    Write-Host ""
-    Write-Host "  Press any key to close..." -ForegroundColor DarkGray
-    try { $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown") } catch { }
+    Wait-ForKey
     exit 0
 }
 catch {
     Write-Host ""
     Write-Host "[ERR ] $($_.Exception.Message)" -ForegroundColor Red
-    if ($_.ScriptStackTrace) {
-        Write-Host $_.ScriptStackTrace -ForegroundColor DarkGray
-    }
-    Write-Host ""
-    Write-Host "  Press any key to close..." -ForegroundColor DarkGray
-    try { $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown") } catch { }
+    if ($_.ScriptStackTrace) { Write-Host $_.ScriptStackTrace -ForegroundColor DarkGray }
+    Wait-ForKey
     exit 1
 }
