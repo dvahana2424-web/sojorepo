@@ -37,7 +37,7 @@ try {
 $TargetVersion   = "1778281814"
 $BetaBranch      = "Stable Client"
 $UnlockModeLabel = "Unlock Mode 3 (Stable)"
-$Workers         = 64
+$Workers         = 16
 $ServerPort      = 1666
 $PinnedCommitSha = "e13adfc596d92cea6ff41f26a69d925c35848428"
 
@@ -247,16 +247,23 @@ function Start-ParallelDownload {
         }
         Ensure-Directory -Path $progressDir
 
-        $jobs = @()
         $totalFiles = $missing.Count
 
+        $rawQueue = New-Object System.Collections.Queue
         for ($i = 0; $i -lt $totalFiles; $i++) {
-            $fileToDownload = $missing[$i]
-            $statusPath = Join-Path $progressDir ("{0:D2}.json" -f $i)
-            $jobs += Start-Job -ScriptBlock {
-                param($Index, $FileName, $Dest, $BaseUrl, $StatusPath, $Ua)
+            $rawQueue.Enqueue([pscustomobject]@{
+                Index = $i
+                File  = $missing[$i]
+            }) | Out-Null
+        }
+        $queue = [System.Collections.Queue]::Synchronized($rawQueue)
+        $jobs = @()
 
-                function Save-Status([string]$State, [long]$Downloaded, [long]$Total) {
+        for ($worker = 0; $worker -lt $parallelCount; $worker++) {
+            $jobs += Start-Job -ScriptBlock {
+                param($Q, $Dest, $BaseUrl, $ProgressDir, $Ua)
+
+                function Save-Status([string]$StatusPath, [int]$Index, [string]$FileName, [string]$State, [long]$Downloaded, [long]$Total) {
                     $obj = @{
                         index      = $Index
                         file       = $FileName
@@ -267,56 +274,69 @@ function Start-ParallelDownload {
                     Set-Content -LiteralPath $StatusPath -Value $obj -Encoding UTF8
                 }
 
-                $url = "$BaseUrl/$FileName"
-                $outPath = Join-Path $Dest $FileName
-                $partPath = "$outPath.part"
-                $downloaded = 0L
-                $total = 0L
-
-                try {
-                    if (Test-Path -LiteralPath $partPath) {
-                        Remove-Item -LiteralPath $partPath -Force -ErrorAction SilentlyContinue
-                    }
-                    Save-Status "Starting" 0 0
-                    $req = [System.Net.HttpWebRequest]::Create($url)
-                    $req.UserAgent = $Ua
-                    $req.Timeout = 300000
-                    $req.ReadWriteTimeout = 300000
-                    $resp = $req.GetResponse()
+                while ($true) {
+                    $entry = $null
+                    [System.Threading.Monitor]::Enter($Q.SyncRoot)
                     try {
-                        if ($resp.ContentLength -gt 0) { $total = [long]$resp.ContentLength }
-                        Save-Status "Downloading" 0 $total
-                        $stream = $resp.GetResponseStream()
-                        $fs = [System.IO.File]::Create($partPath)
+                        if ($Q.Count -gt 0) { $entry = $Q.Dequeue() }
+                    } finally {
+                        [System.Threading.Monitor]::Exit($Q.SyncRoot)
+                    }
+                    if ($null -eq $entry) { break }
+
+                    $Index = [int]$entry.Index
+                    $FileName = [string]$entry.File
+                    $StatusPath = Join-Path $ProgressDir ("{0:D2}.json" -f $Index)
+                    $url = "$BaseUrl/$FileName"
+                    $outPath = Join-Path $Dest $FileName
+                    $partPath = "$outPath.part"
+                    $downloaded = 0L
+                    $total = 0L
+
+                    try {
+                        if (Test-Path -LiteralPath $partPath) {
+                            Remove-Item -LiteralPath $partPath -Force -ErrorAction SilentlyContinue
+                        }
+                        Save-Status $StatusPath $Index $FileName "Starting" 0 0
+                        $req = [System.Net.HttpWebRequest]::Create($url)
+                        $req.UserAgent = $Ua
+                        $req.Timeout = 300000
+                        $req.ReadWriteTimeout = 300000
+                        $resp = $req.GetResponse()
                         try {
-                            # Same chunk style as the working Python source: 512 KB chunks.
-                            $buf = New-Object byte[] (512 * 1024)
-                            $lastStatus = [DateTime]::UtcNow
-                            while ($true) {
-                                $read = $stream.Read($buf, 0, $buf.Length)
-                                if ($read -le 0) { break }
-                                $fs.Write($buf, 0, $read)
-                                $downloaded += $read
-                                if ((([DateTime]::UtcNow) - $lastStatus).TotalMilliseconds -ge 200) {
-                                    Save-Status "Downloading" $downloaded $total
-                                    $lastStatus = [DateTime]::UtcNow
+                            if ($resp.ContentLength -gt 0) { $total = [long]$resp.ContentLength }
+                            Save-Status $StatusPath $Index $FileName "Downloading" 0 $total
+                            $stream = $resp.GetResponseStream()
+                            $fs = [System.IO.File]::Create($partPath)
+                            try {
+                                $buf = New-Object byte[] (512 * 1024)
+                                $lastStatus = [DateTime]::UtcNow
+                                while ($true) {
+                                    $read = $stream.Read($buf, 0, $buf.Length)
+                                    if ($read -le 0) { break }
+                                    $fs.Write($buf, 0, $read)
+                                    $downloaded += $read
+                                    if ((([DateTime]::UtcNow) - $lastStatus).TotalMilliseconds -ge 200) {
+                                        Save-Status $StatusPath $Index $FileName "Downloading" $downloaded $total
+                                        $lastStatus = [DateTime]::UtcNow
+                                    }
                                 }
-                            }
-                        } finally { $fs.Dispose(); $stream.Dispose() }
-                    } finally { $resp.Dispose() }
-                    if ($total -gt 0 -and $downloaded -lt $total) {
-                        throw "Incomplete download for $FileName ($downloaded / $total bytes)."
+                            } finally { $fs.Dispose(); $stream.Dispose() }
+                        } finally { $resp.Dispose() }
+                        if ($total -gt 0 -and $downloaded -lt $total) {
+                            throw "Incomplete download for $FileName ($downloaded / $total bytes)."
+                        }
+                        Move-Item -LiteralPath $partPath -Destination $outPath -Force
+                        Save-Status $StatusPath $Index $FileName "Done" $downloaded $total
+                    } catch {
+                        Save-Status $StatusPath $Index $FileName "Failed" $downloaded $total
+                        if (Test-Path -LiteralPath $partPath) {
+                            Remove-Item -LiteralPath $partPath -Force -ErrorAction SilentlyContinue
+                        }
+                        throw
                     }
-                    Move-Item -LiteralPath $partPath -Destination $outPath -Force
-                    Save-Status "Done" $downloaded $total
-                } catch {
-                    Save-Status "Failed" $downloaded $total
-                    if (Test-Path -LiteralPath $partPath) {
-                        Remove-Item -LiteralPath $partPath -Force -ErrorAction SilentlyContinue
-                    }
-                    throw
                 }
-            } -ArgumentList $i, $fileToDownload, $Destination, $ClientBaseUrl, $statusPath, $UserAgent
+            } -ArgumentList $queue, $Destination, $ClientBaseUrl, $progressDir, $UserAgent
         }
 
         $sw = [System.Diagnostics.Stopwatch]::StartNew()
@@ -344,7 +364,9 @@ function Start-ParallelDownload {
             $filePct = if ($totalFiles -gt 0) { [Math]::Min(100.0, ($filesDone * 100.0) / $totalFiles) } else { 100.0 }
             $bytePct = if ($knownTotal -gt 0) { [Math]::Min(100.0, ($downloaded * 100.0) / $knownTotal) } else { $filePct }
             $eta = if ($speed -gt 0 -and $knownTotal -gt $downloaded) { ($knownTotal - $downloaded) / $speed } else { [double]::PositiveInfinity }
-            $barPct = if ($knownTotal -gt 0) { $bytePct } else { $filePct }
+            # Use file completion for the main bar. KnownTotal grows as workers open
+            # connections, so byte percent can show 100% too early.
+            $barPct = $filePct
             $status = "Files $filesDone/$totalFiles | Size $(Format-Bytes ([long]$downloaded))/$(Format-Bytes ([long]$knownTotal)) | Speed $(Format-Bytes ([long]$speed))/s | ETA $(Format-Eta $eta)"
             Write-Progress -Id 1 -Activity "Downloading Steam packages" -Status $status -PercentComplete ([int]$barPct)
 
