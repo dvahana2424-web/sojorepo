@@ -232,34 +232,42 @@ function Start-ParallelDownload {
         return
     }
 
-    Write-Info "Downloading $($missing.Count) missing file(s)..."
-    $progressFile = Join-Path $env:TEMP ("steam-dl-{0}.log" -f [guid]::NewGuid().ToString("N"))
+    Write-Info "Downloading $($missing.Count) file(s) in parallel..."
+    $progressDir = Join-Path $env:TEMP ("steam-dl-{0}" -f [guid]::NewGuid().ToString("N"))
     try {
         if (Test-Path -LiteralPath $completeMarker) {
             Remove-Item -LiteralPath $completeMarker -Force -ErrorAction SilentlyContinue
         }
+        Ensure-Directory -Path $progressDir
 
-        $rawQueue = New-Object System.Collections.Queue
-        foreach ($item in $missing) { $null = $rawQueue.Enqueue($item) }
-        $queue = [System.Collections.Queue]::Synchronized($rawQueue)
         $jobs = @()
-        $wc = [Math]::Min($MaxWorkers, $missing.Count)
+        $totalFiles = $missing.Count
 
-        for ($w = 0; $w -lt $wc; $w++) {
+        for ($i = 0; $i -lt $missing.Count; $i++) {
+            $fileToDownload = $missing[$i]
+            $statusPath = Join-Path $progressDir ("{0:D2}.json" -f $i)
             $jobs += Start-Job -ScriptBlock {
-                param($Q, $Dest, $BaseUrl, $ProgressFile, $Ua)
-                while ($true) {
-                    $fileName = $null
-                    [System.Threading.Monitor]::Enter($Q.SyncRoot)
-                    try { if ($Q.Count -gt 0) { $fileName = $Q.Dequeue() } }
-                    finally { [System.Threading.Monitor]::Exit($Q.SyncRoot) }
-                    if (-not $fileName) { break }
+                param($Index, $FileName, $Dest, $BaseUrl, $StatusPath, $Ua)
 
-                    $url = "$BaseUrl/$fileName"
-                    $outPath = Join-Path $Dest $fileName
-                    $partPath = "$outPath.part"
-                    $downloaded = 0L
-                    $total = 0L
+                function Save-Status([string]$State, [long]$Downloaded, [long]$Total) {
+                    $obj = @{
+                        index      = $Index
+                        file       = $FileName
+                        state      = $State
+                        downloaded = $Downloaded
+                        total      = $Total
+                    } | ConvertTo-Json -Compress
+                    Set-Content -LiteralPath $StatusPath -Value $obj -Encoding UTF8
+                }
+
+                $url = "$BaseUrl/$FileName"
+                $outPath = Join-Path $Dest $FileName
+                $partPath = "$outPath.part"
+                $downloaded = 0L
+                $total = 0L
+
+                try {
+                    Save-Status "Starting" 0 0
                     $req = [System.Net.HttpWebRequest]::Create($url)
                     $req.UserAgent = $Ua
                     $req.Timeout = 300000
@@ -267,59 +275,66 @@ function Start-ParallelDownload {
                     $resp = $req.GetResponse()
                     try {
                         if ($resp.ContentLength -gt 0) { $total = [long]$resp.ContentLength }
+                        Save-Status "Downloading" 0 $total
                         $stream = $resp.GetResponseStream()
                         $fs = [System.IO.File]::Create($partPath)
                         try {
                             $buf = New-Object byte[] (524288)
+                            $lastStatus = [DateTime]::UtcNow
                             while ($true) {
                                 $read = $stream.Read($buf, 0, $buf.Length)
                                 if ($read -le 0) { break }
                                 $fs.Write($buf, 0, $read)
                                 $downloaded += $read
+                                if ((([DateTime]::UtcNow) - $lastStatus).TotalMilliseconds -ge 250) {
+                                    Save-Status "Downloading" $downloaded $total
+                                    $lastStatus = [DateTime]::UtcNow
+                                }
                             }
                         } finally { $fs.Dispose(); $stream.Dispose() }
                     } finally { $resp.Dispose() }
                     Move-Item -LiteralPath $partPath -Destination $outPath -Force
-                    $line = (@{ file = $fileName; downloaded = $downloaded; total = $total } | ConvertTo-Json -Compress)
-                    Add-Content -LiteralPath $ProgressFile -Value $line -Encoding UTF8
+                    Save-Status "Done" $downloaded $total
+                } catch {
+                    Save-Status "Failed" $downloaded $total
+                    throw
                 }
-            } -ArgumentList $queue, $Destination, $ClientBaseUrl, $progressFile, $UserAgent
+            } -ArgumentList $i, $fileToDownload, $Destination, $ClientBaseUrl, $statusPath, $UserAgent
         }
 
         $sw = [System.Diagnostics.Stopwatch]::StartNew()
-        $totalFiles = $missing.Count
 
         while (($jobs | Where-Object { $_.State -eq 'Running' }).Count -gt 0) {
             $filesDone = 0
             $downloaded = 0L
-            $byFile = @{}
+            $statusItems = @()
 
-            foreach ($f in $missing) {
-                $part = Join-Path $Destination "$f.part"
-                if (Test-Path -LiteralPath $part) {
-                    $downloaded += (Get-Item -LiteralPath $part).Length
-                }
-            }
-
-            if (Test-Path -LiteralPath $progressFile) {
-                foreach ($ln in (Get-Content -LiteralPath $progressFile -ErrorAction SilentlyContinue)) {
-                    if ([string]::IsNullOrWhiteSpace($ln)) { continue }
-                    try {
-                        $o = $ln | ConvertFrom-Json
-                        if ($o.file) { $byFile[[string]$o.file] = $o }
-                    } catch { }
-                }
-            }
-            $filesDone = $byFile.Count
-            foreach ($o in $byFile.Values) {
-                $downloaded += [long]$o.downloaded
+            foreach ($statusFile in (Get-ChildItem -LiteralPath $progressDir -Filter "*.json" -ErrorAction SilentlyContinue | Sort-Object Name)) {
+                try {
+                    $o = Get-Content -LiteralPath $statusFile.FullName -Raw | ConvertFrom-Json
+                    $statusItems += $o
+                    if ($o.state -eq "Done") { $filesDone++ }
+                    $downloaded += [long]$o.downloaded
+                } catch { }
             }
 
             $elapsed = [Math]::Max($sw.Elapsed.TotalSeconds, 0.001)
             $speed = $downloaded / $elapsed
             $fp = if ($totalFiles -gt 0) { [Math]::Min(100.0, ($filesDone * 100.0) / $totalFiles) } else { 100.0 }
             $status = "Files $filesDone/$totalFiles | Downloaded $(Format-Bytes ([long]$downloaded)) | Speed $(Format-Bytes ([long]$speed))/s"
-            Write-Progress -Activity "Downloading Steam packages" -Status $status -PercentComplete ([int]$fp)
+            Write-Progress -Id 0 -Activity "Downloading Steam packages" -Status $status -PercentComplete ([int]$fp)
+
+            foreach ($item in $statusItems) {
+                $idx = [int]$item.index
+                $total = [long]$item.total
+                $done = [long]$item.downloaded
+                $pct = if ($total -gt 0) { [Math]::Min(100, [int](($done * 100.0) / $total)) } elseif ($item.state -eq "Done") { 100 } else { 0 }
+                $name = [string]$item.file
+                if ($name.Length -gt 45) { $name = $name.Substring(0, 42) + "..." }
+                $childStatus = "$($item.state) | $(Format-Bytes $done)"
+                if ($total -gt 0) { $childStatus += " / $(Format-Bytes $total)" }
+                Write-Progress -Id ($idx + 1) -ParentId 0 -Activity ("{0:D2}. {1}" -f ($idx + 1), $name) -Status $childStatus -PercentComplete $pct
+            }
             Start-Sleep -Milliseconds 300
         }
 
@@ -327,12 +342,15 @@ function Start-ParallelDownload {
             Receive-Job -Job $j -Wait -ErrorAction Stop | Out-Null
             Remove-Job -Job $j -Force -ErrorAction SilentlyContinue
         }
-        Write-Progress -Activity "Downloading Steam packages" -Completed
+        for ($i = 1; $i -le $totalFiles; $i++) {
+            Write-Progress -Id $i -ParentId 0 -Activity "File $i" -Completed
+        }
+        Write-Progress -Id 0 -Activity "Downloading Steam packages" -Completed
         Set-Content -LiteralPath $completeMarker -Value ((Get-Date).ToUniversalTime().ToString("o")) -Encoding ASCII
         Write-Ok "Download complete."
     } finally {
-        Write-Progress -Activity "Downloading Steam packages" -Completed
-        if (Test-Path -LiteralPath $progressFile) { Remove-Item -LiteralPath $progressFile -Force -ErrorAction SilentlyContinue }
+        Write-Progress -Id 0 -Activity "Downloading Steam packages" -Completed
+        if (Test-Path -LiteralPath $progressDir) { Remove-Item -LiteralPath $progressDir -Recurse -Force -ErrorAction SilentlyContinue }
     }
 }
 
