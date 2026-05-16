@@ -37,7 +37,7 @@ try {
 $TargetVersion   = "1778281814"
 $BetaBranch      = "Stable Client"
 $UnlockModeLabel = "Unlock Mode 3 (Stable)"
-$Workers         = 12
+$Workers         = 64
 $ServerPort      = 1666
 $PinnedCommitSha = "e13adfc596d92cea6ff41f26a69d925c35848428"
 
@@ -96,6 +96,12 @@ function Format-Eta([double]$Seconds) {
     $s = [int]($rem % 60)
     if ($h -gt 0) { return ('{0:D2}:{1:D2}:{2:D2}' -f $h, $m, $s) }
     return ('{0:D2}:{1:D2}' -f $m, $s)
+}
+
+function Get-ShortFileName([string]$Name, [int]$MaxLength = 44) {
+    if ([string]::IsNullOrWhiteSpace($Name)) { return "" }
+    if ($Name.Length -le $MaxLength) { return $Name }
+    return ($Name.Substring(0, $MaxLength - 3) + "...")
 }
 
 function New-ProgressBar([double]$Percent, [int]$Width = 28) {
@@ -232,7 +238,8 @@ function Start-ParallelDownload {
         return
     }
 
-    Write-Info "Downloading $($missing.Count) file(s) in parallel..."
+    $parallelCount = [Math]::Min($MaxWorkers, $missing.Count)
+    Write-Info "Downloading $($missing.Count) file(s) in parallel ($parallelCount active download(s))..."
     $progressDir = Join-Path $env:TEMP ("steam-dl-{0}" -f [guid]::NewGuid().ToString("N"))
     try {
         if (Test-Path -LiteralPath $completeMarker) {
@@ -243,7 +250,7 @@ function Start-ParallelDownload {
         $jobs = @()
         $totalFiles = $missing.Count
 
-        for ($i = 0; $i -lt $missing.Count; $i++) {
+        for ($i = 0; $i -lt $totalFiles; $i++) {
             $fileToDownload = $missing[$i]
             $statusPath = Join-Path $progressDir ("{0:D2}.json" -f $i)
             $jobs += Start-Job -ScriptBlock {
@@ -267,6 +274,9 @@ function Start-ParallelDownload {
                 $total = 0L
 
                 try {
+                    if (Test-Path -LiteralPath $partPath) {
+                        Remove-Item -LiteralPath $partPath -Force -ErrorAction SilentlyContinue
+                    }
                     Save-Status "Starting" 0 0
                     $req = [System.Net.HttpWebRequest]::Create($url)
                     $req.UserAgent = $Ua
@@ -279,24 +289,31 @@ function Start-ParallelDownload {
                         $stream = $resp.GetResponseStream()
                         $fs = [System.IO.File]::Create($partPath)
                         try {
-                            $buf = New-Object byte[] (524288)
+                            # Same chunk style as the working Python source: 512 KB chunks.
+                            $buf = New-Object byte[] (512 * 1024)
                             $lastStatus = [DateTime]::UtcNow
                             while ($true) {
                                 $read = $stream.Read($buf, 0, $buf.Length)
                                 if ($read -le 0) { break }
                                 $fs.Write($buf, 0, $read)
                                 $downloaded += $read
-                                if ((([DateTime]::UtcNow) - $lastStatus).TotalMilliseconds -ge 250) {
+                                if ((([DateTime]::UtcNow) - $lastStatus).TotalMilliseconds -ge 200) {
                                     Save-Status "Downloading" $downloaded $total
                                     $lastStatus = [DateTime]::UtcNow
                                 }
                             }
                         } finally { $fs.Dispose(); $stream.Dispose() }
                     } finally { $resp.Dispose() }
+                    if ($total -gt 0 -and $downloaded -lt $total) {
+                        throw "Incomplete download for $FileName ($downloaded / $total bytes)."
+                    }
                     Move-Item -LiteralPath $partPath -Destination $outPath -Force
                     Save-Status "Done" $downloaded $total
                 } catch {
                     Save-Status "Failed" $downloaded $total
+                    if (Test-Path -LiteralPath $partPath) {
+                        Remove-Item -LiteralPath $partPath -Force -ErrorAction SilentlyContinue
+                    }
                     throw
                 }
             } -ArgumentList $i, $fileToDownload, $Destination, $ClientBaseUrl, $statusPath, $UserAgent
@@ -304,9 +321,11 @@ function Start-ParallelDownload {
 
         $sw = [System.Diagnostics.Stopwatch]::StartNew()
 
-        while (($jobs | Where-Object { $_.State -eq 'Running' }).Count -gt 0) {
+        while ($true) {
             $filesDone = 0
+            $filesFailed = 0
             $downloaded = 0L
+            $knownTotal = 0L
             $statusItems = @()
 
             foreach ($statusFile in (Get-ChildItem -LiteralPath $progressDir -Filter "*.json" -ErrorAction SilentlyContinue | Sort-Object Name)) {
@@ -314,38 +333,61 @@ function Start-ParallelDownload {
                     $o = Get-Content -LiteralPath $statusFile.FullName -Raw | ConvertFrom-Json
                     $statusItems += $o
                     if ($o.state -eq "Done") { $filesDone++ }
+                    if ($o.state -eq "Failed") { $filesFailed++ }
                     $downloaded += [long]$o.downloaded
+                    $knownTotal += [long]$o.total
                 } catch { }
             }
 
             $elapsed = [Math]::Max($sw.Elapsed.TotalSeconds, 0.001)
             $speed = $downloaded / $elapsed
-            $fp = if ($totalFiles -gt 0) { [Math]::Min(100.0, ($filesDone * 100.0) / $totalFiles) } else { 100.0 }
-            $status = "Files $filesDone/$totalFiles | Downloaded $(Format-Bytes ([long]$downloaded)) | Speed $(Format-Bytes ([long]$speed))/s"
-            Write-Progress -Id 0 -Activity "Downloading Steam packages" -Status $status -PercentComplete ([int]$fp)
+            $filePct = if ($totalFiles -gt 0) { [Math]::Min(100.0, ($filesDone * 100.0) / $totalFiles) } else { 100.0 }
+            $bytePct = if ($knownTotal -gt 0) { [Math]::Min(100.0, ($downloaded * 100.0) / $knownTotal) } else { $filePct }
+            $eta = if ($speed -gt 0 -and $knownTotal -gt $downloaded) { ($knownTotal - $downloaded) / $speed } else { [double]::PositiveInfinity }
+            $status = "Files $filesDone/$totalFiles | Size $(Format-Bytes ([long]$downloaded)) / $(Format-Bytes ([long]$knownTotal)) | Speed $(Format-Bytes ([long]$speed))/s | ETA $(Format-Eta $eta)"
+            Write-Progress -Id 0 -Activity "Downloading Steam packages" -Status $status -PercentComplete ([int]$bytePct)
 
             foreach ($item in $statusItems) {
                 $idx = [int]$item.index
                 $total = [long]$item.total
                 $done = [long]$item.downloaded
                 $pct = if ($total -gt 0) { [Math]::Min(100, [int](($done * 100.0) / $total)) } elseif ($item.state -eq "Done") { 100 } else { 0 }
-                $name = [string]$item.file
-                if ($name.Length -gt 45) { $name = $name.Substring(0, 42) + "..." }
+                $name = Get-ShortFileName ([string]$item.file)
                 $childStatus = "$($item.state) | $(Format-Bytes $done)"
                 if ($total -gt 0) { $childStatus += " / $(Format-Bytes $total)" }
                 Write-Progress -Id ($idx + 1) -ParentId 0 -Activity ("{0:D2}. {1}" -f ($idx + 1), $name) -Status $childStatus -PercentComplete $pct
             }
+
+            $runningCount = @($jobs | Where-Object { $_.State -eq 'Running' -or $_.State -eq 'NotStarted' }).Count
+            if ($filesFailed -gt 0) { break }
+            if ($filesDone -ge $totalFiles) { break }
+            if ($runningCount -eq 0) { break }
             Start-Sleep -Milliseconds 300
         }
 
+        $jobErrors = @()
         foreach ($j in $jobs) {
-            Receive-Job -Job $j -Wait -ErrorAction Stop | Out-Null
-            Remove-Job -Job $j -Force -ErrorAction SilentlyContinue
+            try {
+                Receive-Job -Job $j -Wait -ErrorAction Stop | Out-Null
+            } catch {
+                $jobErrors += $_.Exception.Message
+            } finally {
+                Remove-Job -Job $j -Force -ErrorAction SilentlyContinue
+            }
         }
         for ($i = 1; $i -le $totalFiles; $i++) {
             Write-Progress -Id $i -ParentId 0 -Activity "File $i" -Completed
         }
         Write-Progress -Id 0 -Activity "Downloading Steam packages" -Completed
+
+        if ($jobErrors.Count -gt 0) {
+            throw "Download failed: $($jobErrors[0])"
+        }
+        $stillMissing = @($Files | Where-Object { -not (Test-Path -LiteralPath (Join-Path $Destination $_)) })
+        if ($stillMissing.Count -gt 0) {
+            throw "Download finished but cache is incomplete ($($stillMissing.Count) missing). Please run Other Functions again."
+        }
+
         Set-Content -LiteralPath $completeMarker -Value ((Get-Date).ToUniversalTime().ToString("o")) -Encoding ASCII
         Write-Ok "Download complete."
     } finally {
