@@ -27,7 +27,9 @@ if ($env:STEAM_INSTALLER_NOPROFILE -ne '1' -and -not [string]::IsNullOrWhiteSpac
     }
 }
 
-Set-StrictMode -Version Latest
+# NOTE: Strict mode is intentionally OFF here. The downloader uses runspaces and
+# pipelines that occasionally return $null, which crashes Set-StrictMode -Version Latest
+# with "The property 'Count' cannot be found on this object."
 $ErrorActionPreference = "Stop"
 
 try {
@@ -247,15 +249,16 @@ function Start-ParallelDownload {
         Remove-Item -LiteralPath $completeMarker -Force -ErrorAction SilentlyContinue
     }
 
-    $missing = Get-MissingPackageFiles -Files $Files -Destination $Destination
-    if ($missing.Count -eq 0) {
+    $missing = @(Get-MissingPackageFiles -Files $Files -Destination $Destination)
+    $missingCount = $missing.Count
+    if ($missingCount -eq 0) {
         Set-Content -LiteralPath $completeMarker -Value ((Get-Date).ToUniversalTime().ToString("o")) -Encoding ASCII
         Write-Ok "All package files already in cache."
         return
     }
 
-    $parallelCount = [Math]::Min([Math]::Max(1, $MaxWorkers), $missing.Count)
-    Write-Info "Downloading $($missing.Count) file(s) with $parallelCount parallel worker(s)..."
+    $parallelCount = [Math]::Min([Math]::Max(1, $MaxWorkers), $missingCount)
+    Write-Info "Downloading $missingCount file(s) with $parallelCount parallel worker(s)..."
 
     $sync = [hashtable]::Synchronized(@{
             FilesDone        = 0
@@ -357,8 +360,12 @@ function Start-ParallelDownload {
         $lastProgressAt = [DateTime]::UtcNow
         $maxWaitMinutes = 60
 
+        $runspaceCount = $runspaces.Count
         while ($true) {
-            $doneCount = @($runspaces | Where-Object { $_.Handle.IsCompleted }).Count
+            $doneCount = 0
+            foreach ($entry in $runspaces) {
+                if ($entry.Handle.IsCompleted) { $doneCount++ }
+            }
             [System.Threading.Monitor]::Enter($sync.Lock)
             try {
                 $filesDone = [int]$sync.FilesDone
@@ -375,31 +382,22 @@ function Start-ParallelDownload {
 
             $elapsed = [Math]::Max($sw.Elapsed.TotalSeconds, 0.001)
             $speed = $downloaded / $elapsed
-            $filesPct = if ($missing.Count -gt 0) { ($filesDone * 100.0) / $missing.Count } else { 100.0 }
+            $filesPct = if ($missingCount -gt 0) { ($filesDone * 100.0) / $missingCount } else { 100.0 }
             $bytesPct = if ($knownTotal -gt 0) { ($downloaded * 100.0) / $knownTotal } else { $filesPct }
             $eta = if ($speed -gt 0 -and $knownTotal -gt $downloaded) { ($knownTotal - $downloaded) / $speed } else { [double]::PositiveInfinity }
             $barPct = [Math]::Min(100.0, $bytesPct)
-            $status = "{0} Files {1}/{2} {3} {4:N1}% | Bytes {5} {6:N1}% | {7}/s | ETA {8}" -f `
-                @('|', '/', '-', '\')[$spin % 4],
-                $filesDone,
-                $missing.Count,
-                (New-ProgressBar $filesPct 12),
-                $filesPct,
-                (New-ProgressBar $barPct 12),
-                $barPct,
-                (Format-Bytes ([long]$speed)),
-                (Format-Eta $eta)
+            $status = "Files $filesDone/$missingCount | Size $(Format-Bytes ([long]$downloaded))/$(Format-Bytes ([long]$knownTotal)) | Speed $(Format-Bytes ([long]$speed))/s | ETA $(Format-Eta $eta)"
             Write-Progress -Id 1 -Activity "Downloading Steam packages" -Status $status -PercentComplete ([int]$barPct)
             $spin++
 
-            if ($doneCount -ge $runspaces.Count) { break }
+            if ($doneCount -ge $runspaceCount) { break }
             if ($sw.Elapsed.TotalMinutes -ge $maxWaitMinutes) {
                 throw "Download timed out after $maxWaitMinutes minutes."
             }
-            if ((([DateTime]::UtcNow) - $lastProgressAt).TotalSeconds -ge 180 -and $doneCount -lt $runspaces.Count) {
+            if ((([DateTime]::UtcNow) - $lastProgressAt).TotalSeconds -ge 180 -and $doneCount -lt $runspaceCount) {
                 throw "Download stalled for 3 minutes. Check connection and run Other Functions again."
             }
-            Start-Sleep -Milliseconds 120
+            Start-Sleep -Milliseconds 200
         }
 
         foreach ($entry in $runspaces) {
@@ -407,13 +405,16 @@ function Start-ParallelDownload {
             $entry.PS.Dispose()
         }
 
-        if ($errors.Count -gt 0) {
-            throw "Download failed on $($errors.Count) file(s). First error: $($errors | Select-Object -First 1)"
+        $errorCount = $errors.Count
+        if ($errorCount -gt 0) {
+            $firstError = @($errors)[0]
+            throw "Download failed on $errorCount file(s). First error: $firstError"
         }
 
-        $stillMissing = Get-MissingPackageFiles -Files $Files -Destination $Destination
-        if ($stillMissing.Count -gt 0) {
-            throw "Cache incomplete ($($stillMissing.Count) file(s) still missing)."
+        $stillMissing = @(Get-MissingPackageFiles -Files $Files -Destination $Destination)
+        $stillCount = $stillMissing.Count
+        if ($stillCount -gt 0) {
+            throw "Cache incomplete ($stillCount file(s) still missing)."
         }
 
         Set-Content -LiteralPath $completeMarker -Value ((Get-Date).ToUniversalTime().ToString("o")) -Encoding ASCII
