@@ -1,149 +1,279 @@
-cls
-[Console]::InputEncoding = [System.Text.Encoding]::UTF8
-$localPath = Join-Path $env:LOCALAPPDATA "steam"
-$steamRegPath = 'HKCU:\Software\Valve\Steam'
-$steamToolsRegPath = 'HKCU:\Software\Valve\Steamtools'
-$steamPath = ""
-function Remove-ItemIfExists($path) {
-    if (Test-Path $path) {
-        Remove-Item -Path $path -Force -ErrorAction SilentlyContinue
+param(
+    [string]$Version,
+    [datetime]$Date,
+    [string]$SteamPath = "$env:ProgramFiles(x86)\Steam\steam.exe",
+    [string]$WorkDir = "$PSScriptRoot\steam-cache",
+    [switch]$ListOnly,
+    [switch]$Apply,
+    [switch]$KeepServer
+)
+
+Set-StrictMode -Version Latest
+$ErrorActionPreference = "Stop"
+
+$RepoOwner = "SteamTracking"
+$RepoName = "SteamTracking"
+$ManifestPath = "ClientManifest/steam_client_win64"
+$ClientBaseUrl = "https://client-update.fastly.steamstatic.com"
+$ApiBase = "https://api.github.com/repos/$RepoOwner/$RepoName"
+
+function Write-Info {
+    param([string]$Message)
+    Write-Host "[INFO] $Message" -ForegroundColor Cyan
+}
+
+function Write-WarnText {
+    param([string]$Message)
+    Write-Host "[WARN] $Message" -ForegroundColor Yellow
+}
+
+function Invoke-GitHubJson {
+    param([string]$Url)
+    Invoke-RestMethod -Uri $Url -Headers @{ "User-Agent" = "steam-downgrader-script" }
+}
+
+function Get-VersionFromManifest {
+    param([string]$ManifestText)
+    $match = [regex]::Match($ManifestText, '"version"\s+"(?<v>\d+)"')
+    if (-not $match.Success) {
+        throw "Hindi mahanap ang version field sa manifest."
     }
+    $match.Groups["v"].Value
 }
-function ForceStopProcess($processName) {
-    Get-Process $processName -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
-    Start-Sleep -Seconds 2 
-    if (Get-Process $processName -ErrorAction SilentlyContinue) {
-        Start-Process cmd -ArgumentList "/c taskkill /f /im $processName.exe" -WindowStyle Hidden -ErrorAction SilentlyContinue
-    }
+
+function Get-FilesFromManifest {
+    param([string]$ManifestText)
+    $fileMatches = [regex]::Matches($ManifestText, '"file"\s+"(?<f>[^"]+)"')
+    $zipVzMatches = [regex]::Matches($ManifestText, '"zipvz"\s+"(?<z>[^"]+)"')
+
+    $list = New-Object System.Collections.Generic.List[string]
+    foreach ($m in $fileMatches) { [void]$list.Add($m.Groups["f"].Value) }
+    foreach ($m in $zipVzMatches) { [void]$list.Add($m.Groups["z"].Value) }
+
+    $list | Sort-Object -Unique
 }
-function CheckAndPromptProcess($processName, $message) {
-    while (Get-Process $processName -ErrorAction SilentlyContinue) {
-        Write-Host $message -ForegroundColor Red
-        Start-Sleep 1.5
-    }
+
+function Get-ManifestAtRef {
+    param([string]$Ref)
+    $rawUrl = "https://raw.githubusercontent.com/$RepoOwner/$RepoName/$Ref/$ManifestPath"
+    Invoke-RestMethod -Uri $rawUrl -Headers @{ "User-Agent" = "steam-downgrader-script" }
 }
-$filePathToDelete = Join-Path $env:USERPROFILE "get.ps1"
-Remove-ItemIfExists $filePathToDelete
-ForceStopProcess "steam"
-if (Get-Process "steam" -ErrorAction SilentlyContinue) {
-    CheckAndPromptProcess "Steam" "[Please exit Steam client first]"
-}
-if (Test-Path $steamRegPath) {
-    $properties = Get-ItemProperty -Path $steamRegPath -ErrorAction SilentlyContinue
-    if ($properties -and 'SteamPath' -in $properties.PSObject.Properties.Name) {
-        $steamPath = $properties.SteamPath
-    }
-}
-if ([string]::IsNullOrWhiteSpace($steamPath)) {
-    Write-Host "Official Steam client is not installed on your computer. Please install it and try again." -ForegroundColor Red
-    Start-Sleep 10
-    exit
-}
-if (-not (Test-Path $steamPath -PathType Container)) {
-    Write-Host "Official Steam client is not installed on your computer. Please install it and try again." -ForegroundColor Red
-    Start-Sleep 10
-    exit
-}
-$steamConfigPath = Join-Path $steamPath "config"
-$hidPath = Join-Path $steamPath "xinput1_4.dll"
-Remove-ItemIfExists $hidPath
-$xinputPath = Join-Path $steamPath "user32.dll"
-Remove-ItemIfExists $xinputPath
-function TryDownloadFile([string]$uri, [string]$outfile) {
-    try {
-        Invoke-RestMethod -Uri $uri -OutFile $outfile -ErrorAction Stop
-        return $true
-    } catch {
-        return $false
-    }
-}
-function PwStart() {
-    try {
-        if (!$steamPath) {
-            return
+
+function Get-ManifestHistory {
+    param([int]$Pages = 20, [int]$PerPage = 100)
+
+    $results = @()
+    for ($page = 1; $page -le $Pages; $page++) {
+        $url = "$ApiBase/commits?path=$([uri]::EscapeDataString($ManifestPath))&per_page=$PerPage&page=$page"
+        $commits = Invoke-GitHubJson -Url $url
+        if (-not $commits -or $commits.Count -eq 0) {
+            break
         }
-        if (!(Test-Path $localPath)) {
-            New-Item $localPath -ItemType directory -Force -ErrorAction SilentlyContinue
-        }
-        $steamCfgPath = Join-Path $steamPath "steam.cfg"
-        Remove-ItemIfExists $steamCfgPath
-        $steamBetaPath = Join-Path $steamPath "package\beta"
-        Remove-ItemIfExists $steamBetaPath
-        $catchPath = Join-Path $env:LOCALAPPDATA "Microsoft\Tencent"
-        Remove-ItemIfExists $catchPath
-        try { Add-MpPreference -ExclusionPath $hidPath -ErrorAction SilentlyContinue } catch {}
-        $versionDllPath = Join-Path $steamPath "version.dll"
-        Remove-ItemIfExists $versionDllPath
-        $downloadHidDll = "http://update.aaasn.com/update"
-        $githubRawXInputCandidates = @(
-            "https://raw.githubusercontent.com/dvahana2424-web/sojorepo/main/xinput1_4.dll"
-        )
-        $downloadedXInput = $false
-        try {
-            Invoke-RestMethod -Uri $downloadHidDll -OutFile $hidPath -ErrorAction Stop
-            $downloadedXInput = $true
-        } catch {
-            foreach ($u in $githubRawXInputCandidates) {
-                if (TryDownloadFile -uri $u -outfile $hidPath) {
-                    $downloadedXInput = $true
-                    break
+
+        foreach ($c in $commits) {
+            try {
+                $manifest = Get-ManifestAtRef -Ref $c.sha
+                $version = Get-VersionFromManifest -ManifestText $manifest
+                $results += [pscustomobject]@{
+                    Version = $version
+                    CommitDate = [datetime]$c.commit.author.date
+                    CommitSha = $c.sha
+                    CommitUrl = $c.html_url
                 }
+            } catch {
+                Write-WarnText "Skip commit $($c.sha): $($_.Exception.Message)"
             }
         }
-        if (-not $downloadedXInput) {
-            if (Test-Path $hidPath) {
-                Move-Item -Path $hidPath -Destination "$hidPath.old" -Force -ErrorAction SilentlyContinue
-            }
-            Write-Host "Failed to download xinput1_4.dll from official site and GitHub repo." -ForegroundColor Red
+    }
+
+    $results |
+        Sort-Object CommitDate -Descending |
+        Group-Object Version |
+        ForEach-Object { $_.Group | Sort-Object CommitDate -Descending | Select-Object -First 1 } |
+        Sort-Object CommitDate -Descending
+}
+
+function Select-TargetVersion {
+    param(
+        [array]$History,
+        [string]$WantedVersion,
+        [datetime]$WantedDate
+    )
+
+    if ($WantedVersion) {
+        $hit = $History | Where-Object { $_.Version -eq $WantedVersion } | Select-Object -First 1
+        if (-not $hit) {
+            throw "Version $WantedVersion not found sa history."
         }
-        $dwmapiPath = Join-Path $steamPath "dwmapi.dll"
-        $downloadDwmapi = "http://update.aaasn.com/dwmapi"
-        $githubRawDwmapiCandidates = @(
-            "https://raw.githubusercontent.com/dvahana2424-web/sojorepo/main/dwmapi.dll"
-        )
-        $downloadedDwmapi = $false
-        try {
-            Invoke-RestMethod -Uri $downloadDwmapi -OutFile $dwmapiPath -ErrorAction Stop
-            $downloadedDwmapi = $true
-        } catch {
-            foreach ($u in $githubRawDwmapiCandidates) {
-                if (TryDownloadFile -uri $u -outfile $dwmapiPath) {
-                    $downloadedDwmapi = $true
-                    break
-                }
-            }
+        return $hit
+    }
+
+    if ($PSBoundParameters.ContainsKey("WantedDate")) {
+        $hit = $History |
+            Where-Object { $_.CommitDate -le $WantedDate } |
+            Sort-Object CommitDate -Descending |
+            Select-Object -First 1
+
+        if (-not $hit) {
+            throw "Walang version na mas luma o equal sa date $WantedDate."
         }
-        if (-not $downloadedDwmapi) {
-            if (Test-Path $dwmapiPath) {
-                Move-Item -Path $dwmapiPath -Destination "$dwmapiPath.old" -Force -ErrorAction SilentlyContinue
-            }
-            Write-Host "Failed to download dwmapi.dll from official site and GitHub repo." -ForegroundColor Red
-        }
-        if (!(Test-Path $steamToolsRegPath)) {
-            New-Item -Path $steamToolsRegPath -Force | Out-Null
-        }
-        Remove-ItemProperty -Path $steamToolsRegPath -Name "ActivateUnlockMode" -ErrorAction SilentlyContinue
-        Remove-ItemProperty -Path $steamToolsRegPath -Name "AlwaysStayUnlocked" -ErrorAction SilentlyContinue
-        Remove-ItemProperty -Path $steamToolsRegPath -Name "notUnlockDepot" -ErrorAction SilentlyContinue
-        Set-ItemProperty -Path $steamToolsRegPath -Name "iscdkey" -Value "true" -Type String
-        $steamExePath = Join-Path $steamPath "steam.exe"
-        Start-Process $steamExePath
-        Start-Process "steam://"
-        Write-Host "[Successfully connected to official activation server. Please login to Steam to activate]" -ForegroundColor Green
-        for ($i = 5; $i -ge 0; $i--) {
-            Write-Host "`r[This window will close in $i seconds...]" -NoNewline
-            Start-Sleep -Seconds 1
-        }
-        $instance = Get-CimInstance Win32_Process -Filter "ProcessId = '$PID'"
-        while ($null -ne $instance -and -not($instance.ProcessName -ne "powershell.exe" -and $instance.ProcessName -ne "WindowsTerminal.exe")) {
-            $parentProcessId = $instance.ProcessId
-            $instance = Get-CimInstance Win32_Process -Filter "ProcessId = '$($instance.ParentProcessId)'"
-        }
-        if ($null -ne $parentProcessId) {
-            Stop-Process -Id $parentProcessId -Force -ErrorAction SilentlyContinue
-        }
-        exit
-    } catch {
+        return $hit
+    }
+
+    throw "Kailangan magbigay ng -Version o -Date."
+}
+
+function Ensure-Directory {
+    param([string]$Path)
+    if (-not (Test-Path -LiteralPath $Path)) {
+        [void](New-Item -ItemType Directory -Path $Path -Force)
     }
 }
-PwStart
+
+function Download-PackageFiles {
+    param(
+        [string[]]$Files,
+        [string]$Destination
+    )
+    Ensure-Directory -Path $Destination
+    foreach ($f in $Files) {
+        $target = Join-Path $Destination $f
+        if (Test-Path -LiteralPath $target) {
+            continue
+        }
+        $url = "$ClientBaseUrl/$f"
+        Write-Info "Downloading $f"
+        Invoke-WebRequest -Uri $url -OutFile $target
+    }
+}
+
+function New-LocalFileServer {
+    param(
+        [string]$RootDir,
+        [int]$Port = 1666
+    )
+
+    $job = Start-Job -ScriptBlock {
+        param($ServeRoot, $ServePort)
+        Add-Type -AssemblyName System.Web
+        $listener = [System.Net.HttpListener]::new()
+        $listener.Prefixes.Add("http://localhost:$ServePort/")
+        $listener.Start()
+        try {
+            while ($listener.IsListening) {
+                $ctx = $listener.GetContext()
+                $path = $ctx.Request.Url.AbsolutePath.TrimStart("/")
+                if ([string]::IsNullOrWhiteSpace($path)) {
+                    $ctx.Response.StatusCode = 404
+                    $ctx.Response.Close()
+                    continue
+                }
+
+                $fullPath = Join-Path $ServeRoot $path
+                if (-not (Test-Path -LiteralPath $fullPath)) {
+                    $ctx.Response.StatusCode = 404
+                    $ctx.Response.Close()
+                    continue
+                }
+
+                $bytes = [System.IO.File]::ReadAllBytes($fullPath)
+                $ctx.Response.StatusCode = 200
+                $ctx.Response.ContentLength64 = $bytes.Length
+                $ctx.Response.OutputStream.Write($bytes, 0, $bytes.Length)
+                $ctx.Response.OutputStream.Close()
+                $ctx.Response.Close()
+            }
+        } finally {
+            $listener.Stop()
+            $listener.Close()
+        }
+    } -ArgumentList $RootDir, $Port
+
+    $job
+}
+
+function Set-SteamCfg {
+    param([string]$InstallDir)
+    $cfgPath = Join-Path $InstallDir "steam.cfg"
+    @(
+        "BootStrapperInhibitAll=enable"
+        "BootStrapperForceSelfUpdate=disable"
+    ) | Set-Content -Path $cfgPath -Encoding ascii
+    Write-Info "Updated steam.cfg at $cfgPath"
+}
+
+function Invoke-SteamDowngrade {
+    param(
+        [string]$SteamExe,
+        [int]$Port = 1666
+    )
+
+    $args = @(
+        "-clearbeta"
+        "-textmode"
+        "-forcesteamupdate"
+        "-forcepackagedownload"
+        "-overridepackageurl"
+        "http://localhost:$Port/"
+        "-exitsteam"
+    )
+    Write-Info "Running Steam downgrade command..."
+    & $SteamExe @args
+}
+
+if (-not (Test-Path -LiteralPath $SteamPath) -and $Apply) {
+    throw "Hindi makita ang steam.exe sa path: $SteamPath"
+}
+
+Write-Info "Fetching SteamTracking history..."
+$history = Get-ManifestHistory
+if (-not $history -or $history.Count -eq 0) {
+    throw "Walang nakuha na history entries."
+}
+
+if ($ListOnly) {
+    $history |
+        Select-Object Version, CommitDate, CommitSha |
+        Format-Table -AutoSize
+    exit 0
+}
+
+$selected = Select-TargetVersion -History $history -WantedVersion $Version -WantedDate $Date
+Write-Info "Selected Version: $($selected.Version)"
+Write-Info "Manifest Commit Date (UTC): $($selected.CommitDate.ToString("u"))"
+Write-Info "Commit: $($selected.CommitUrl)"
+
+$manifest = Get-ManifestAtRef -Ref $selected.CommitSha
+$files = Get-FilesFromManifest -ManifestText $manifest
+
+$cacheRoot = Join-Path $WorkDir $selected.Version
+Ensure-Directory -Path $cacheRoot
+
+$sourcesPath = Join-Path $cacheRoot "sources.txt"
+$files | ForEach-Object { "$ClientBaseUrl/$_" } | Set-Content -Path $sourcesPath -Encoding ascii
+Write-Info "Wrote sources list: $sourcesPath"
+
+Download-PackageFiles -Files $files -Destination $cacheRoot
+
+if (-not $Apply) {
+    Write-Info "Download complete. Hindi pa nag-aapply sa Steam."
+    Write-Info "Run again with -Apply para i-force update to this version."
+    exit 0
+}
+
+$steamDir = Split-Path -Path $SteamPath -Parent
+Set-SteamCfg -InstallDir $steamDir
+$server = New-LocalFileServer -RootDir $cacheRoot -Port 1666
+Start-Sleep -Seconds 1
+
+try {
+    Invoke-SteamDowngrade -SteamExe $SteamPath -Port 1666
+    Write-Info "Done. Check mo Steam client version pagkatapos mag-start."
+} finally {
+    if (-not $KeepServer) {
+        Stop-Job -Id $server.Id -ErrorAction SilentlyContinue | Out-Null
+        Remove-Job -Id $server.Id -Force -ErrorAction SilentlyContinue | Out-Null
+    } else {
+        Write-WarnText "Server kept alive (job id: $($server.Id))."
+    }
+}
