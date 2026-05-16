@@ -75,12 +75,12 @@ function Format-Bytes([long]$Bytes) {
 function Format-Eta([double]$Seconds) {
     if ($Seconds -lt 0 -or [double]::IsInfinity($Seconds) -or [double]::IsNaN($Seconds)) { return "--:--" }
     $total = [int][Math]::Floor($Seconds)
-    $h = [Math]::Floor($total / 3600)
+    $h = [int]([Math]::Floor($total / 3600))
     $rem = $total % 3600
-    $m = [Math]::Floor($rem / 60)
-    $s = $rem % 60
-    if ($h -gt 0) { return "{0:D2}:{1:D2}:{2:D2}" -f $h, $m, $s }
-    return "{0:D2}:{1:D2}" -f $m, $s
+    $m = [int]([Math]::Floor($rem / 60))
+    $s = [int]($rem % 60)
+    if ($h -gt 0) { return ('{0:D2}:{1:D2}:{2:D2}' -f $h, $m, $s) }
+    return ('{0:D2}:{1:D2}' -f $m, $s)
 }
 
 function New-ProgressBar([double]$Percent, [int]$Width = 28) {
