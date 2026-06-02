@@ -1,7 +1,7 @@
 📢 Quick Troubleshooting Tip! For Hammer app user (Windows) 📢
 
 If your unlock isn't working after the steam update today 6/2/26 don't panic! Just follow these quick steps to get it back up and running:
-6
+
 TURN OFF the toggle ❌
 
 TURN ON the toggle again (use unlock mode 3)
