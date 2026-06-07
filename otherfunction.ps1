@@ -36,12 +36,12 @@ try {
     [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
 } catch { }
 
-$TargetVersion   = "1778281814"
+$TargetVersion   = "1780352834"
 $BetaBranch      = "Stable Client"
 $UnlockModeLabel = "Unlock Mode 3 (Stable)"
 $Workers         = 16
 $ServerPort      = 1666
-$PinnedCommitSha = "e13adfc596d92cea6ff41f26a69d925c35848428"
+$PinnedCommitSha = "0d1e5cef82dc19d1607e77c2902076f5418c968f"
 
 $RepoOwner     = "SteamTracking"
 $RepoName      = "SteamTracking"
