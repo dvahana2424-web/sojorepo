@@ -602,7 +602,7 @@ function Invoke-UpdateToggle([string]$SteamExe) {
 function Show-MainMenu {
     Write-Host ""
     Write-Host "  ================================================================" -ForegroundColor DarkCyan
-    Write-Host "       STEAM TOOL - OTHER FUNCTIONS" -ForegroundColor White
+    Write-Host "       HAMMER APP - OTHER FUNCTION" -ForegroundColor White
     Write-Host "  ================================================================" -ForegroundColor DarkCyan
     Write-Host ""
     Write-Host "   [1] Downgrade Steam" -ForegroundColor Yellow
