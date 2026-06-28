@@ -36,12 +36,12 @@ try {
     [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
 } catch { }
 
-$TargetVersion   = "1780352834"
+$TargetVersion   = "1778281814"
 $BetaBranch      = "Stable Client"
 $UnlockModeLabel = "Unlock Mode 3 (Stable)"
 $Workers         = 16
 $ServerPort      = 1666
-$PinnedCommitSha = "0d1e5cef82dc19d1607e77c2902076f5418c968f"
+$PinnedCommitSha = "e13adfc596d92cea6ff41f26a69d925c35848428"
 
 $RepoOwner     = "SteamTracking"
 $RepoName      = "SteamTracking"
@@ -477,6 +477,148 @@ function Invoke-SteamApply([string]$SteamExe, [int]$Port) {
     }
 }
 
+function Start-SteamApp([string]$SteamExe) {
+    $steamDir = Split-Path -Parent $SteamExe
+    try {
+        Start-Process -FilePath $SteamExe -WorkingDirectory $steamDir | Out-Null
+        Write-Ok "Steam restarted."
+    } catch {
+        Write-WarnText "Could not auto-start Steam. Please open it manually."
+    }
+}
+
+function Get-LuaFileForApp {
+    param([string]$SteamDir, [string]$AppId)
+    foreach ($rel in @("config\lua\$AppId.lua", "config\stplug-in\$AppId.lua")) {
+        $candidate = Join-Path $SteamDir $rel
+        if (Test-Path -LiteralPath $candidate) { return $candidate }
+    }
+    return $null
+}
+
+function Get-ManifestLineInfo([string]$Line) {
+    # Returns a state for a line: "active", "commented", or "other"
+    if ($Line -match '^\s*--\s*setManifestid\s*\(') { return "commented" }
+    if ($Line -match '^\s*setManifestid\s*\(') { return "active" }
+    return "other"
+}
+
+function Show-LuaStatus {
+    param([string[]]$Lines, [string]$Title)
+    $active = 0
+    $commented = 0
+    Write-Host ""
+    Write-Host "  $Title" -ForegroundColor White
+    foreach ($l in $Lines) {
+        $state = Get-ManifestLineInfo -Line $l
+        if ($state -eq "other") { continue }
+        $appMatch = [regex]::Match($l, 'setManifestid\s*\(\s*(?<id>\d+)')
+        $appLabel = if ($appMatch.Success) { $appMatch.Groups["id"].Value } else { "?" }
+        if ($state -eq "commented") {
+            $commented++
+            Write-Host ("    - depot {0} : UPDATING (updates enabled, manifest not pinned)" -f $appLabel) -ForegroundColor Green
+        } else {
+            $active++
+            Write-Host ("    - depot {0} : NOT updating (pinned to a fixed manifest)" -f $appLabel) -ForegroundColor Yellow
+        }
+    }
+    if (($active + $commented) -eq 0) {
+        Write-Host "    (no setManifestid lines)" -ForegroundColor DarkGray
+    }
+    return [pscustomobject]@{ Active = $active; Commented = $commented }
+}
+
+function Invoke-UpdateToggle([string]$SteamExe) {
+    $steamDir = Split-Path -Parent $SteamExe
+
+    Write-Host ""
+    Write-Host "  ----------------------------------------------------------------" -ForegroundColor DarkCyan
+    Write-Host "       ENABLE / DISABLE STEAM GAME UPDATES" -ForegroundColor White
+    Write-Host "  ----------------------------------------------------------------" -ForegroundColor DarkCyan
+
+    $appId = (Read-Host "  Enter the AppID (example 413150)").Trim()
+    if ($appId -notmatch '^\d+$') {
+        throw "Invalid AppID. Numbers only (example 413150)."
+    }
+
+    $luaFile = Get-LuaFileForApp -SteamDir $steamDir -AppId $appId
+    if (-not $luaFile) {
+        throw "Lua file not found for AppID $appId.`nExpected: $(Join-Path $steamDir "config\lua\$appId.lua")"
+    }
+    Write-Info "Found lua file: $luaFile"
+
+    $lines = @(Get-Content -LiteralPath $luaFile)
+    $before = Show-LuaStatus -Lines $lines -Title "Current status:"
+
+    if (($before.Active + $before.Commented) -eq 0) {
+        throw "No setManifestid lines found in $([IO.Path]::GetFileName($luaFile)). Nothing to enable/disable."
+    }
+
+    # State logic:
+    #   active   setManifestid(...)   => game is PINNED      => updates DISABLED (not updating)
+    #   --setManifestid(...)          => game is NOT pinned  => updates ENABLED (will update)
+    # Toggle to the opposite state.
+    $currentlyUpdating = ($before.Active -eq 0 -and $before.Commented -gt 0)
+
+    if ($currentlyUpdating) {
+        # Updates currently ENABLED -> DISABLE: uncomment (pin the manifest)
+        $newLines = foreach ($l in $lines) {
+            if ((Get-ManifestLineInfo -Line $l) -eq "commented") {
+                $l -replace '^(\s*)--\s*(setManifestid\s*\()', '$1$2'
+            } else { $l }
+        }
+        $resultState = "DISABLED"
+    } else {
+        # Updates currently DISABLED (pinned) -> ENABLE: comment out (free the manifest)
+        $newLines = foreach ($l in $lines) {
+            if ((Get-ManifestLineInfo -Line $l) -eq "active") {
+                $l -replace '^(\s*)(setManifestid\s*\()', '$1--$2'
+            } else { $l }
+        }
+        $resultState = "ENABLED"
+    }
+
+    $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+    [System.IO.File]::WriteAllLines($luaFile, [string[]]$newLines, $utf8NoBom)
+    Write-Ok "Saved: $luaFile"
+
+    $after = Show-LuaStatus -Lines $newLines -Title "New status:"
+
+    Write-Info "Restarting Steam to apply the change..."
+    Stop-SteamProcesses
+    Start-Sleep -Seconds 2
+    Start-SteamApp -SteamExe $SteamExe
+
+    Write-Host ""
+    if ($resultState -eq "ENABLED") {
+        Write-Ok "Updates ENABLED for AppID $appId."
+        Write-Host "  Starting now, this AppID ($appId) WILL receive the upcoming updates." -ForegroundColor Green
+    } else {
+        Write-Ok "Updates DISABLED for AppID $appId."
+        Write-Host "  Starting now, this AppID ($appId) will NOT receive the upcoming updates (pinned)." -ForegroundColor Green
+    }
+}
+
+function Show-MainMenu {
+    Write-Host ""
+    Write-Host "  ================================================================" -ForegroundColor DarkCyan
+    Write-Host "       STEAM TOOL - OTHER FUNCTIONS" -ForegroundColor White
+    Write-Host "  ================================================================" -ForegroundColor DarkCyan
+    Write-Host ""
+    Write-Host "   [1] Downgrade Steam" -ForegroundColor Yellow
+    Write-Host "       Run the one-click Steam downgrade installer." -ForegroundColor Gray
+    Write-Host ""
+    Write-Host "   [2] Enable / Disable Steam game updates" -ForegroundColor Yellow
+    Write-Host "       Toggle updates for a specific game by AppID." -ForegroundColor Gray
+    Write-Host ""
+    Write-Host "  ================================================================" -ForegroundColor DarkCyan
+    while ($true) {
+        $sel = (Read-Host "  Press 1 or 2 then Enter").Trim()
+        if ($sel -eq '1' -or $sel -eq '2') { return $sel }
+        Write-WarnText "Please type 1 or 2."
+    }
+}
+
 # --- Main ---
 $WorkDir   = Join-Path $env:LOCALAPPDATA "SteamStableInstaller\steam-cache"
 $SteamPath = Resolve-DefaultSteamPath
@@ -491,6 +633,14 @@ try {
         throw "steam.exe not found at: $SteamPath`nInstall Steam first."
     }
 
+    $choice = Show-MainMenu
+    if ($choice -eq '2') {
+        Invoke-UpdateToggle -SteamExe $SteamPath
+        Wait-ForKey
+        exit 0
+    }
+
+    # choice 1 -> Downgrade Steam (one-click installer below)
     $steamDir = Split-Path -Parent $SteamPath
     $currentVer = Get-LocalClientVersion -SteamDir $steamDir
     Show-InstallBanner -CurrentVersion $currentVer -SteamExe $SteamPath
