@@ -1,6 +1,6 @@
 📢 Quick Troubleshooting Tip! For Hammer app user (Windows) 📢
 
-If your unlock isn't working after the steam update today 6/2/26 don't panic! Just follow these quick steps to get it back up and running:
+If your unlock isn't working after the steam update or No Internet Connection error today 7/1/26 don't panic! Just follow these quick steps to get it back up and running:
 
 TURN OFF the toggle ❌ of UNLOCK MODE in Hammer 3.8 then
 
