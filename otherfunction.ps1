@@ -543,7 +543,7 @@ function Invoke-UpdateToggle([string]$SteamExe) {
 
     $luaFile = Get-LuaFileForApp -SteamDir $steamDir -AppId $appId
     if (-not $luaFile) {
-        throw "Lua file not found for AppID $appId.`nExpected: $(Join-Path $steamDir "config\lua\$appId.lua")"
+        throw "Lua file not found for AppID $appId.`nExpected: $(Join-Path $steamDir "config\lua\$appId.lua") or $(Join-Path $steamDir "config\stplug-in\$appId.lua")"
     }
     Write-Info "Found lua file: $luaFile"
 
@@ -599,6 +599,74 @@ function Invoke-UpdateToggle([string]$SteamExe) {
     }
 }
 
+function Get-LuaPathsForApp {
+    param([string]$SteamDir, [string]$AppId)
+    @(
+        (Join-Path $SteamDir "config\lua\$AppId.lua"),
+        (Join-Path $SteamDir "config\stplug-in\$AppId.lua")
+    )
+}
+
+function Invoke-DeleteLuaFiles([string]$SteamExe) {
+    $steamDir = Split-Path -Parent $SteamExe
+
+    Write-Host ""
+    Write-Host "  ----------------------------------------------------------------" -ForegroundColor DarkCyan
+    Write-Host "       DELETE .LUA FILE (by AppID)" -ForegroundColor White
+    Write-Host "  ----------------------------------------------------------------" -ForegroundColor DarkCyan
+    Write-Host "  Looks in:" -ForegroundColor Gray
+    Write-Host "    - $steamDir\config\lua\{AppID}.lua" -ForegroundColor DarkGray
+    Write-Host "    - $steamDir\config\stplug-in\{AppID}.lua" -ForegroundColor DarkGray
+    Write-Host ""
+
+    $appId = (Read-Host "  Enter the AppID to delete (example 413150)").Trim()
+    if ($appId -notmatch '^\d+$') {
+        throw "Invalid AppID. Numbers only (example 413150)."
+    }
+
+    $targets = @(Get-LuaPathsForApp -SteamDir $steamDir -AppId $appId)
+    $existing = @($targets | Where-Object { Test-Path -LiteralPath $_ })
+    if ($existing.Count -eq 0) {
+        throw "No .lua file found for AppID $appId in config\lua or config\stplug-in."
+    }
+
+    Write-Host ""
+    Write-Host "  Will delete:" -ForegroundColor Yellow
+    foreach ($f in $existing) {
+        Write-Host "    - $f" -ForegroundColor White
+    }
+    Write-Host ""
+    $confirm = (Read-Host "  Type YES to confirm delete").Trim()
+    if ($confirm -ne 'YES') {
+        Write-WarnText "Cancelled. No files deleted."
+        return
+    }
+
+    Write-Info "Stopping Steam before deleting lua files..."
+    Stop-SteamProcesses
+    Start-Sleep -Seconds 2
+
+    $deleted = 0
+    foreach ($f in $existing) {
+        try {
+            Remove-Item -LiteralPath $f -Force -ErrorAction Stop
+            Write-Ok "Deleted: $f"
+            $deleted++
+        } catch {
+            Write-WarnText "Failed to delete: $f ($($_.Exception.Message))"
+        }
+    }
+
+    if ($deleted -eq 0) {
+        throw "Could not delete any lua files for AppID $appId."
+    }
+
+    Write-Host ""
+    Write-Ok "Removed $deleted lua file(s) for AppID $appId."
+    Write-Info "Restarting Steam..."
+    Start-SteamApp -SteamExe $SteamExe
+}
+
 function Show-MainMenu {
     Write-Host ""
     Write-Host "  ================================================================" -ForegroundColor DarkCyan
@@ -611,11 +679,14 @@ function Show-MainMenu {
     Write-Host "   [2] Enable / Disable Steam game updates" -ForegroundColor Yellow
     Write-Host "       Toggle updates for a specific game by AppID." -ForegroundColor Gray
     Write-Host ""
+    Write-Host "   [3] Delete .lua file (by AppID)" -ForegroundColor Yellow
+    Write-Host "       Delete {AppID}.lua from config\lua and config\stplug-in." -ForegroundColor Gray
+    Write-Host ""
     Write-Host "  ================================================================" -ForegroundColor DarkCyan
     while ($true) {
-        $sel = (Read-Host "  Press 1 or 2 then Enter").Trim()
-        if ($sel -eq '1' -or $sel -eq '2') { return $sel }
-        Write-WarnText "Please type 1 or 2."
+        $sel = (Read-Host "  Press 1, 2, or 3 then Enter").Trim()
+        if ($sel -eq '1' -or $sel -eq '2' -or $sel -eq '3') { return $sel }
+        Write-WarnText "Please type 1, 2, or 3."
     }
 }
 
@@ -636,6 +707,11 @@ try {
     $choice = Show-MainMenu
     if ($choice -eq '2') {
         Invoke-UpdateToggle -SteamExe $SteamPath
+        Wait-ForKey
+        exit 0
+    }
+    if ($choice -eq '3') {
+        Invoke-DeleteLuaFiles -SteamExe $SteamPath
         Wait-ForKey
         exit 0
     }
