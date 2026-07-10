@@ -679,8 +679,8 @@ function Show-MainMenu {
     Write-Host "   [2] Enable / Disable Steam game updates" -ForegroundColor Yellow
     Write-Host "       Toggle updates for a specific game by AppID." -ForegroundColor Gray
     Write-Host ""
-    Write-Host "   [3] Delete .lua file (by AppID)" -ForegroundColor Yellow
-    Write-Host "       Delete {AppID}.lua from config\lua and config\stplug-in." -ForegroundColor Gray
+    Write-Host "   [3] Delete game file (by AppID)" -ForegroundColor Yellow
+    Write-Host "       Delete Game by Appid." -ForegroundColor Gray
     Write-Host ""
     Write-Host "  ================================================================" -ForegroundColor DarkCyan
     while ($true) {
