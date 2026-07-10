@@ -71,14 +71,75 @@ function Wait-ForKey {
     try { cmd /c pause | Out-Null } catch { Start-Sleep -Seconds 8 }
 }
 
-function Resolve-DefaultSteamPath {
-    foreach ($p in @(
-            (Join-Path ${env:ProgramFiles(x86)} "Steam\steam.exe"),
-            (Join-Path $env:ProgramFiles "Steam\steam.exe")
-        )) {
-        if (Test-Path -LiteralPath $p) { return $p }
+function Normalize-SteamRoot([string]$Path) {
+    if ([string]::IsNullOrWhiteSpace($Path)) { return $null }
+    $p = $Path.Trim().Trim('"').Replace('/', '\')
+    if ($p.ToLowerInvariant().EndsWith('\steam.exe')) {
+        $p = Split-Path -Parent $p
     }
-    return (Join-Path ${env:ProgramFiles(x86)} "Steam\steam.exe")
+    return $p.TrimEnd('\')
+}
+
+function Get-SteamPathFromRegistry {
+    try {
+        $key = Get-ItemProperty -Path 'HKCU:\Software\Valve\Steam' -Name 'SteamPath' -ErrorAction Stop
+        return (Normalize-SteamRoot ([string]$key.SteamPath))
+    } catch {
+        return $null
+    }
+}
+
+function Get-SteamPathFromFile([string]$FilePath) {
+    if (-not (Test-Path -LiteralPath $FilePath)) { return $null }
+    try {
+        $raw = (Get-Content -LiteralPath $FilePath -Raw -ErrorAction Stop).Trim()
+        if ([string]::IsNullOrWhiteSpace($raw)) { return $null }
+        return (Normalize-SteamRoot $raw)
+    } catch {
+        return $null
+    }
+}
+
+function Resolve-SteamExe {
+    $candidates = New-Object System.Collections.Generic.List[string]
+
+    $reg = Get-SteamPathFromRegistry
+    if ($reg) { [void]$candidates.Add((Join-Path $reg 'steam.exe')) }
+
+    foreach ($f in @(
+            (Join-Path ${env:ProgramFiles(x86)} 'Hammer\steampath.txt'),
+            (Join-Path $env:ProgramFiles 'Hammer\steampath.txt'),
+            (Join-Path $PSScriptRoot 'steampath.txt'),
+            'C:\GFK\steampath.txt'
+        )) {
+        $fromFile = Get-SteamPathFromFile -FilePath $f
+        if ($fromFile) { [void]$candidates.Add((Join-Path $fromFile 'steam.exe')) }
+    }
+
+    [void]$candidates.Add((Join-Path ${env:ProgramFiles(x86)} 'Steam\steam.exe'))
+    [void]$candidates.Add((Join-Path $env:ProgramFiles 'Steam\steam.exe'))
+
+    foreach ($exe in $candidates) {
+        if (-not [string]::IsNullOrWhiteSpace($exe) -and (Test-Path -LiteralPath $exe)) {
+            Write-Info "Steam found: $exe"
+            return $exe
+        }
+    }
+
+    Write-WarnText "Steam not found in default locations / registry / steampath.txt."
+    Write-Host "  Example: C:\Program Files (x86)\Steam\steam.exe" -ForegroundColor DarkGray
+    Write-Host "  Or folder: C:\Program Files (x86)\Steam" -ForegroundColor DarkGray
+    $manual = (Read-Host "  Enter full path to steam.exe (or Steam folder)").Trim().Trim('"')
+    if ([string]::IsNullOrWhiteSpace($manual)) {
+        throw "steam.exe not found. Install Steam or enter a valid path."
+    }
+    $root = Normalize-SteamRoot $manual
+    $exe = if ($manual.ToLowerInvariant().EndsWith('steam.exe')) { $manual.Replace('/', '\') } else { Join-Path $root 'steam.exe' }
+    if (-not (Test-Path -LiteralPath $exe)) {
+        throw "steam.exe not found at: $exe`nInstall Steam first, or check the path."
+    }
+    Write-Info "Steam found: $exe"
+    return $exe
 }
 
 function Format-Bytes([long]$Bytes) {
@@ -679,8 +740,8 @@ function Show-MainMenu {
     Write-Host "   [2] Enable / Disable Steam game updates" -ForegroundColor Yellow
     Write-Host "       Toggle updates for a specific game by AppID." -ForegroundColor Gray
     Write-Host ""
-    Write-Host "   [3] Delete game file (by AppID)" -ForegroundColor Yellow
-    Write-Host "       Delete Game by Appid." -ForegroundColor Gray
+    Write-Host "   [3] Delete .lua file (by AppID)" -ForegroundColor Yellow
+    Write-Host "       Delete {AppID}.lua from config\lua and config\stplug-in." -ForegroundColor Gray
     Write-Host ""
     Write-Host "  ================================================================" -ForegroundColor DarkCyan
     while ($true) {
@@ -692,7 +753,7 @@ function Show-MainMenu {
 
 # --- Main ---
 $WorkDir   = Join-Path $env:LOCALAPPDATA "SteamStableInstaller\steam-cache"
-$SteamPath = Resolve-DefaultSteamPath
+$SteamPath = $null
 $CacheRoot = Join-Path $WorkDir $TargetVersion
 
 try {
@@ -700,6 +761,7 @@ try {
         throw "Administrator required. Click Other Functions again and press Yes on the Windows UAC prompt."
     }
 
+    $SteamPath = Resolve-SteamExe
     if (-not (Test-Path -LiteralPath $SteamPath)) {
         throw "steam.exe not found at: $SteamPath`nInstall Steam first."
     }
