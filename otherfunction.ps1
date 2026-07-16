@@ -557,6 +557,116 @@ function Get-LuaFileForApp {
     return $null
 }
 
+function Get-SteamLibraryRoots {
+    param([string]$SteamDir)
+    $roots = New-Object System.Collections.Generic.List[string]
+    [void]$roots.Add($SteamDir.TrimEnd('\'))
+
+    $vdf = Join-Path $SteamDir "steamapps\libraryfolders.vdf"
+    if (Test-Path -LiteralPath $vdf) {
+        try {
+            $raw = Get-Content -LiteralPath $vdf -Raw -ErrorAction Stop
+            foreach ($m in [regex]::Matches($raw, '"path"\s+"(?<p>[^"]+)"')) {
+                $p = Normalize-SteamRoot ($m.Groups["p"].Value -replace '\\\\', '\')
+                if (-not [string]::IsNullOrWhiteSpace($p) -and (Test-Path -LiteralPath $p)) {
+                    if (-not ($roots | Where-Object { $_.Equals($p, [StringComparison]::OrdinalIgnoreCase) })) {
+                        [void]$roots.Add($p)
+                    }
+                }
+            }
+        } catch {
+            Write-WarnText "Could not parse libraryfolders.vdf: $($_.Exception.Message)"
+        }
+    }
+    return @($roots)
+}
+
+function Find-AppManifestPath {
+    param([string]$SteamDir, [string]$AppId)
+    foreach ($root in (Get-SteamLibraryRoots -SteamDir $SteamDir)) {
+        $acf = Join-Path $root "steamapps\appmanifest_$AppId.acf"
+        if (Test-Path -LiteralPath $acf) { return $acf }
+    }
+    return $null
+}
+
+function Backup-SteamFile {
+    param([string]$Path, [string]$Tag)
+    if (-not (Test-Path -LiteralPath $Path)) { return $null }
+    $dir = Split-Path -Parent $Path
+    $name = [IO.Path]::GetFileName($Path)
+    $stamp = Get-Date -Format "yyyyMMdd_HHmmss"
+    $tagPart = if ([string]::IsNullOrWhiteSpace($Tag)) { "" } else { "_$Tag" }
+    $bak = Join-Path $dir ($name + ".bak" + $tagPart + "_" + $stamp)
+    Copy-Item -LiteralPath $Path -Destination $bak -Force
+    return $bak
+}
+
+function Clear-SteamAppInfoCache {
+    param([string]$SteamDir, [string]$AppId)
+    $ai = Join-Path $SteamDir "appcache\appinfo.vdf"
+    if (-not (Test-Path -LiteralPath $ai)) {
+        Write-Info "appinfo.vdf already absent (Steam will rebuild it)."
+        return $false
+    }
+    $bak = Backup-SteamFile -Path $ai -Tag ("appid" + $AppId)
+    Remove-Item -LiteralPath $ai -Force
+    if ($bak) {
+        Write-Ok "Cleared stale appinfo.vdf (backup: $bak)"
+    } else {
+        Write-Ok "Cleared stale appinfo.vdf"
+    }
+    return $true
+}
+
+function Invoke-ForceAppManifestUpdate {
+    param([string]$SteamDir, [string]$AppId)
+    # After de-pinning, Steam often keeps StateFlags=4 and buildid==TargetBuildID
+    # with the old pinned depot GID in InstalledDepots. Mark update-required and
+    # clear TargetBuildID so Steam re-evaluates against fresh appinfo.
+    $acf = Find-AppManifestPath -SteamDir $SteamDir -AppId $AppId
+    if (-not $acf) {
+        Write-WarnText "appmanifest_$AppId.acf not found in any Steam library (game may not be installed)."
+        return $false
+    }
+
+    Write-Info "Found appmanifest: $acf"
+    $bak = Backup-SteamFile -Path $acf -Tag ("update" + $AppId)
+    $text = Get-Content -LiteralPath $acf -Raw
+
+    $stateMatch = [regex]::Match($text, '"StateFlags"\s+"(?<v>\d+)"')
+    $oldState = if ($stateMatch.Success) { [int]$stateMatch.Groups["v"].Value } else { 4 }
+    # Bit 2 = UpdateRequired, bit 4 = FullyInstalled
+    $newState = ($oldState -bor 2)
+    if (($oldState -band 4) -eq 0) { $newState = ($newState -bor 4) }
+
+    $text2 = [regex]::Replace($text, '"StateFlags"\s+"\d+"', ('"StateFlags"' + "`t`t" + '"' + $newState + '"'), 1)
+    $text2 = [regex]::Replace($text2, '"TargetBuildID"\s+"\d+"', ('"TargetBuildID"' + "`t`t" + '"0"'), 1)
+
+    $depotManifest = $null
+    $dm = [regex]::Match($text2, '"InstalledDepots"\s*\{[\s\S]*?"manifest"\s+"(?<m>\d+)"')
+    if ($dm.Success) { $depotManifest = $dm.Groups["m"].Value }
+
+    $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+    [System.IO.File]::WriteAllText($acf, $text2, $utf8NoBom)
+
+    Write-Ok "Nudged appmanifest_$AppId.acf for update check (StateFlags $oldState -> $newState, TargetBuildID=0)."
+    if ($bak) { Write-Info "appmanifest backup: $bak" }
+    if ($depotManifest) {
+        Write-Info "Installed depot still on manifest $depotManifest (Steam will replace it if a newer build exists)."
+    }
+    return $true
+}
+
+function Invoke-EnableGameUpdateFixes {
+    param([string]$SteamDir, [string]$AppId)
+    Write-Host ""
+    Write-Host "  Applying update-enable cache fixes for AppID $AppId..." -ForegroundColor Cyan
+    Write-Host "  (stale appinfo / pinned appmanifest can block Steam from seeing updates)" -ForegroundColor DarkGray
+    [void](Clear-SteamAppInfoCache -SteamDir $SteamDir -AppId $AppId)
+    [void](Invoke-ForceAppManifestUpdate -SteamDir $SteamDir -AppId $AppId)
+}
+
 function Get-ManifestLineInfo([string]$Line) {
     # Returns a state for a line: "active", "commented", or "other"
     if ($Line -match '^\s*--\s*setManifestid\s*\(') { return "commented" }
@@ -645,15 +755,30 @@ function Invoke-UpdateToggle([string]$SteamExe) {
 
     $after = Show-LuaStatus -Lines $newLines -Title "New status:"
 
-    Write-Info "Restarting Steam to apply the change..."
+    Write-Info "Stopping Steam before applying cache / manifest fixes..."
     Stop-SteamProcesses
     Start-Sleep -Seconds 2
+
+    if ($resultState -eq "ENABLED") {
+        # De-pin alone is not enough: Steam keeps the old pinned GID in
+        # appcache\appinfo.vdf and appmanifest_{AppID}.acf (StateFlags=4,
+        # buildid==TargetBuildID). Clear/nudge those so Steam re-fetches.
+        Invoke-EnableGameUpdateFixes -SteamDir $steamDir -AppId $appId
+    } else {
+        # Re-pin: refresh appinfo so Hammer can re-apply the pinned GID cleanly.
+        Write-Info "Refreshing appinfo.vdf so the pin can re-apply cleanly..."
+        [void](Clear-SteamAppInfoCache -SteamDir $steamDir -AppId $appId)
+    }
+
+    Write-Info "Restarting Steam to apply the change..."
     Start-SteamApp -SteamExe $SteamExe
 
     Write-Host ""
     if ($resultState -eq "ENABLED") {
         Write-Ok "Updates ENABLED for AppID $appId."
-        Write-Host "  Starting now, this AppID ($appId) WILL receive the upcoming updates." -ForegroundColor Green
+        Write-Host "  Lua de-pinned + appinfo.vdf cleared + appmanifest nudged." -ForegroundColor Green
+        Write-Host "  Steam should now detect an update if a newer build exists." -ForegroundColor Green
+        Write-Host "  If nothing appears, Library -> game -> Properties -> Installed Files -> Verify." -ForegroundColor DarkGray
     } else {
         Write-Ok "Updates DISABLED for AppID $appId."
         Write-Host "  Starting now, this AppID ($appId) will NOT receive the upcoming updates (pinned)." -ForegroundColor Green
@@ -738,7 +863,9 @@ function Show-MainMenu {
     Write-Host "       Run the one-click Steam downgrade installer." -ForegroundColor Gray
     Write-Host ""
     Write-Host "   [2] Enable / Disable Steam game updates" -ForegroundColor Yellow
-    Write-Host "       Toggle updates for a specific game by AppID." -ForegroundColor Gray
+    Write-Host "       Toggle setManifestid pin by AppID." -ForegroundColor Gray
+    Write-Host "       When enabling: also clears appinfo.vdf + nudges appmanifest.acf" -ForegroundColor Gray
+    Write-Host "       so Steam actually sees the update (de-pin alone is not enough)." -ForegroundColor Gray
     Write-Host ""
     Write-Host "   [3] Delete .lua file (by AppID)" -ForegroundColor Yellow
     Write-Host "       Delete {AppID}.lua from config\lua and config\stplug-in." -ForegroundColor Gray
