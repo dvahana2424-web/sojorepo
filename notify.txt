@@ -3,8 +3,9 @@ Discord add me up in Discord so you can still contact me username is >>> hammers
 
 📢 Quick Troubleshooting Tip! For Hammer app user (Windows) 📢
 
-If your unlock isn't working after the steam update today 7/28/26, click OTHER FUNCTION
-choose DOWNGRADE STEAM it should work now, ill update hammer later to work with latest version
+If your unlock isn't working after the steam update today 7/28/26, 
+
+Just turn OFF UNLOCK MODE 3 swith to OFF and ON , restart Steam
 
 That's it! It should hook perfectly now and get you straight back into the game. 🚀⚡
 
