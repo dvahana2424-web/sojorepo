@@ -853,6 +853,42 @@ function Invoke-DeleteLuaFiles([string]$SteamExe) {
  Start-SteamApp -SteamExe $SteamExe
 }
 
+function Get-SafeTempDir {
+    $candidates = @(
+        (Join-Path $env:LOCALAPPDATA 'Temp'),
+        (Join-Path ([Environment]::GetFolderPath('LocalApplicationData')) 'Temp'),
+        $env:TEMP,
+        $env:TMP,
+        (Join-Path $env:SystemRoot 'Temp')
+    )
+    foreach ($candidate in $candidates) {
+        if ([string]::IsNullOrWhiteSpace($candidate)) { continue }
+        try {
+            $dir = ([System.IO.DirectoryInfo]$candidate).FullName
+            if (-not (Test-Path -LiteralPath $dir)) {
+                [void][System.IO.Directory]::CreateDirectory($dir)
+            }
+            return $dir
+        } catch { }
+    }
+    return $env:TEMP
+}
+
+function Remove-FileSafe([string]$Path) {
+    if ([string]::IsNullOrWhiteSpace($Path)) { return $false }
+    if (-not (Test-Path -LiteralPath $Path)) { return $true }
+    try {
+        $full = ([System.IO.FileInfo]$Path).FullName
+        [System.IO.File]::Delete($full)
+        return $true
+    } catch { }
+    try {
+        cmd.exe /c "del /F /Q `"$Path`"" | Out-Null
+        return -not (Test-Path -LiteralPath $Path)
+    } catch { }
+    return $false
+}
+
 function Stop-HammerProcesses {
     foreach ($proc in Get-Process -Name 'Hammer' -ErrorAction SilentlyContinue) {
         try {
@@ -865,10 +901,29 @@ function Stop-HammerProcesses {
 }
 
 function Clear-OtherFunctionTemp {
-    $tempScript = Join-Path $env:TEMP 'otherfunction.ps1'
-    if (Test-Path -LiteralPath $tempScript) {
-        Remove-Item -LiteralPath $tempScript -Force -ErrorAction SilentlyContinue
-        Write-Info "Cleared cached Other Functions script."
+    $tempScript = Join-Path (Get-SafeTempDir) 'otherfunction.ps1'
+    if ([string]::IsNullOrWhiteSpace($tempScript) -or -not (Test-Path -LiteralPath $tempScript)) { return }
+
+    $selfPath = $script:SelfPath
+    if (-not [string]::IsNullOrWhiteSpace($selfPath)) {
+        try {
+            $a = ([System.IO.FileInfo]$tempScript).FullName
+            $b = ([System.IO.FileInfo]$selfPath).FullName
+            if ($a.Equals($b, [StringComparison]::OrdinalIgnoreCase)) {
+                Write-Info "Skipping delete of active script (refreshes on next Other Functions launch)."
+                return
+            }
+        } catch { }
+    }
+
+    try {
+        if (Remove-FileSafe -Path $tempScript) {
+            Write-Info "Cleared cached Other Functions script."
+        } else {
+            Write-WarnText "Could not clear cached script (upgrade will continue)."
+        }
+    } catch {
+        Write-WarnText "Could not clear cached script: $($_.Exception.Message)"
     }
 }
 
@@ -884,7 +939,7 @@ function Invoke-UpgradeHammer {
     Write-Host " Steam and Hammer will close during the upgrade (~100 MB download)." -ForegroundColor Gray
     Write-Host ""
     $confirm = (Read-Host " Type YES to start upgrade").Trim()
-    if ($confirm -ne 'YES') {
+    if ($confirm.ToUpperInvariant() -ne 'YES') {
         Write-WarnText "Cancelled."
         return
     }
