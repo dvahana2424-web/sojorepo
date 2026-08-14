@@ -927,6 +927,83 @@ function Clear-OtherFunctionTemp {
     }
 }
 
+function Sync-WindowsDateTime {
+    Write-Host ""
+    Write-Host " Syncing Windows date & time (required for Hammer license/CDN)..." -ForegroundColor Cyan
+    Write-Host " Before: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss K')" -ForegroundColor DarkGray
+
+    $syncOk = $false
+    try {
+        $w32 = Get-Service -Name 'w32time' -ErrorAction Stop
+        if ($w32.Status -ne 'Running') {
+            Set-Service -Name 'w32time' -StartupType Automatic -ErrorAction SilentlyContinue
+            Start-Service -Name 'w32time' -ErrorAction Stop
+            Write-Info "Started Windows Time service (w32time)."
+        } else {
+            Set-Service -Name 'w32time' -StartupType Automatic -ErrorAction SilentlyContinue
+        }
+
+        $paramPath = 'HKLM:\SYSTEM\CurrentControlSet\Services\W32Time\Parameters'
+        $ntpClientPath = 'HKLM:\SYSTEM\CurrentControlSet\Services\W32Time\TimeProviders\NtpClient'
+        if (-not (Test-Path -LiteralPath $paramPath)) {
+            New-Item -Path $paramPath -Force | Out-Null
+        }
+        Set-ItemProperty -LiteralPath $paramPath -Name 'Type' -Value 'NTP' -Type String -Force
+        Set-ItemProperty -LiteralPath $paramPath -Name 'NtpServer' -Value 'time.windows.com,0x9' -Type String -Force -ErrorAction SilentlyContinue
+        if (Test-Path -LiteralPath $ntpClientPath) {
+            Set-ItemProperty -LiteralPath $ntpClientPath -Name 'Enabled' -Value 1 -Type DWord -Force
+        }
+
+        $configPath = 'HKLM:\SYSTEM\CurrentControlSet\Services\W32Time\Config'
+        if (Test-Path -LiteralPath $configPath) {
+            Set-ItemProperty -LiteralPath $configPath -Name 'AnnounceFlags' -Value 5 -Type DWord -Force -ErrorAction SilentlyContinue
+        }
+
+        # Windows 10/11 — enable "Set time automatically" (NTP client)
+        $autoTimePath = 'HKLM:\SYSTEM\CurrentControlSet\Services\W32Time\TimeProviders\NtpClient'
+        if (Test-Path -LiteralPath $autoTimePath) {
+            Set-ItemProperty -LiteralPath $autoTimePath -Name 'Enabled' -Value 1 -Type DWord -Force
+        }
+
+        $null = Start-Process -FilePath "$env:SystemRoot\System32\w32tm.exe" `
+            -ArgumentList '/config', '/manualpeerlist:time.windows.com', '/syncfromflags:manual', '/reliable:yes', '/update' `
+            -Wait -PassThru -WindowStyle Hidden
+
+        $resync = Start-Process -FilePath "$env:SystemRoot\System32\w32tm.exe" `
+            -ArgumentList '/resync', '/force' `
+            -Wait -PassThru -WindowStyle Hidden
+        if ($resync.ExitCode -eq 0) {
+            $syncOk = $true
+            Write-Ok "Time synchronized with time.windows.com."
+        } else {
+            Write-WarnText "w32tm resync exit code $($resync.ExitCode) — trying fallback sync..."
+        }
+    } catch {
+        Write-WarnText "Could not configure Windows Time service: $($_.Exception.Message)"
+    }
+
+    if (-not $syncOk) {
+        try {
+            $retry = Start-Process -FilePath "$env:SystemRoot\System32\w32tm.exe" `
+                -ArgumentList '/resync', '/rediscover' `
+                -Wait -PassThru -WindowStyle Hidden
+            if ($retry.ExitCode -eq 0) {
+                $syncOk = $true
+                Write-Ok "Time synchronized (rediscover)."
+            }
+        } catch { }
+    }
+
+    if (-not $syncOk) {
+        Write-WarnText "Automatic time sync could not be confirmed — upgrade will continue."
+    }
+
+    Write-Host " After:  $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss K')" -ForegroundColor DarkGray
+    Write-Host " UTC:    $(([DateTimeOffset]::UtcNow).ToString('yyyy-MM-dd HH:mm:ss'))" -ForegroundColor DarkGray
+    Write-Host " Tip: Settings → Time & language → turn ON 'Set time automatically' if clock is still wrong." -ForegroundColor DarkYellow
+    Write-Host ""
+}
+
 function Invoke-UpgradeHammer {
     $installUrl = 'https://raw.githubusercontent.com/dvahana2424-web/hammerdeckydowngrade/Hammer-3.8-obfuscated/install.ps1'
 
@@ -936,6 +1013,7 @@ function Invoke-UpgradeHammer {
     Write-Host " ----------------------------------------------------------------" -ForegroundColor DarkCyan
     Write-Host ""
     Write-Host " Downloads and installs the latest Hammer build." -ForegroundColor Gray
+    Write-Host " Syncs Windows date/time (Set time automatically)." -ForegroundColor Gray
     Write-Host " Steam and Hammer will close during the upgrade (~100 MB download)." -ForegroundColor Gray
     Write-Host ""
     $confirm = (Read-Host " Type YES to start upgrade").Trim()
@@ -943,6 +1021,8 @@ function Invoke-UpgradeHammer {
         Write-WarnText "Cancelled."
         return
     }
+
+    Sync-WindowsDateTime
 
     Write-Info "Closing Steam and Hammer before upgrade..."
     Stop-SteamProcesses
@@ -977,7 +1057,7 @@ function Show-MainMenu {
  Write-Host " Delete {AppID}.lua from config\lua and config\stplug-in." -ForegroundColor Gray
  Write-Host ""
  Write-Host " [4] Upgrade Hammer" -ForegroundColor Yellow
- Write-Host " Install / update to the latest Hammer 4.1 build (Cloudflare CDN)." -ForegroundColor Gray
+ Write-Host " Install latest build, sync Windows time, close Steam/Hammer." -ForegroundColor Gray
  Write-Host ""
  Write-Host " ================================================================" -ForegroundColor DarkCyan
  while ($true) {
