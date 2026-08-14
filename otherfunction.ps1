@@ -853,6 +853,25 @@ function Invoke-DeleteLuaFiles([string]$SteamExe) {
  Start-SteamApp -SteamExe $SteamExe
 }
 
+function Stop-HammerProcesses {
+    foreach ($proc in Get-Process -Name 'Hammer' -ErrorAction SilentlyContinue) {
+        try {
+            Stop-Process -Id $proc.Id -Force -ErrorAction Stop
+        } catch {
+            Write-WarnText "Could not stop Hammer (PID $($proc.Id)): $($_.Exception.Message)"
+        }
+    }
+    Start-Process -FilePath 'taskkill' -ArgumentList '/F', '/IM', 'Hammer.exe' -WindowStyle Hidden -Wait -ErrorAction SilentlyContinue | Out-Null
+}
+
+function Clear-OtherFunctionTemp {
+    $tempScript = Join-Path $env:TEMP 'otherfunction.ps1'
+    if (Test-Path -LiteralPath $tempScript) {
+        Remove-Item -LiteralPath $tempScript -Force -ErrorAction SilentlyContinue
+        Write-Info "Cleared cached Other Functions script."
+    }
+}
+
 function Invoke-UpgradeHammer {
     $installUrl = 'https://raw.githubusercontent.com/dvahana2424-web/hammerdeckydowngrade/Hammer-3.8-obfuscated/install.ps1'
 
@@ -861,17 +880,20 @@ function Invoke-UpgradeHammer {
     Write-Host " UPGRADE HAMMER TO LATEST" -ForegroundColor White
     Write-Host " ----------------------------------------------------------------" -ForegroundColor DarkCyan
     Write-Host ""
-    Write-Host " Downloads and installs the latest Hammer 4.1 build from Cloudflare CDN." -ForegroundColor Gray
-    Write-Host " Hammer will close during the upgrade (~100 MB download)." -ForegroundColor Gray
-    Write-Host ""
-    Write-Host " Command:" -ForegroundColor DarkGray
-    Write-Host " irm $installUrl | iex" -ForegroundColor White
+    Write-Host " Downloads and installs the latest Hammer build." -ForegroundColor Gray
+    Write-Host " Steam and Hammer will close during the upgrade (~100 MB download)." -ForegroundColor Gray
     Write-Host ""
     $confirm = (Read-Host " Type YES to start upgrade").Trim()
     if ($confirm -ne 'YES') {
         Write-WarnText "Cancelled."
         return
     }
+
+    Write-Info "Closing Steam and Hammer before upgrade..."
+    Stop-SteamProcesses
+    Stop-HammerProcesses
+    Clear-OtherFunctionTemp
+    Start-Sleep -Seconds 2
 
     Write-Info "Starting Hammer upgrade installer..."
     try {
