@@ -959,7 +959,7 @@ function Sync-WindowsDateTime {
             Set-ItemProperty -LiteralPath $configPath -Name 'AnnounceFlags' -Value 5 -Type DWord -Force -ErrorAction SilentlyContinue
         }
 
-        # Windows 10/11 — enable "Set time automatically" (NTP client)
+        # Windows 10/11 - enable "Set time automatically" (NTP client)
         $autoTimePath = 'HKLM:\SYSTEM\CurrentControlSet\Services\W32Time\TimeProviders\NtpClient'
         if (Test-Path -LiteralPath $autoTimePath) {
             Set-ItemProperty -LiteralPath $autoTimePath -Name 'Enabled' -Value 1 -Type DWord -Force
@@ -976,7 +976,7 @@ function Sync-WindowsDateTime {
             $syncOk = $true
             Write-Ok "Time synchronized with time.windows.com."
         } else {
-            Write-WarnText "w32tm resync exit code $($resync.ExitCode) — trying fallback sync..."
+            Write-WarnText "w32tm resync exit code $($resync.ExitCode) - trying fallback sync..."
         }
     } catch {
         Write-WarnText "Could not configure Windows Time service: $($_.Exception.Message)"
@@ -995,12 +995,12 @@ function Sync-WindowsDateTime {
     }
 
     if (-not $syncOk) {
-        Write-WarnText "Automatic time sync could not be confirmed — upgrade will continue."
+        Write-WarnText "Automatic time sync could not be confirmed - upgrade will continue."
     }
 
     Write-Host " After:  $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss K')" -ForegroundColor DarkGray
     Write-Host " UTC:    $(([DateTimeOffset]::UtcNow).ToString('yyyy-MM-dd HH:mm:ss'))" -ForegroundColor DarkGray
-    Write-Host " Tip: Settings → Time & language → turn ON 'Set time automatically' if clock is still wrong." -ForegroundColor DarkYellow
+    Write-Host " Tip: Settings - Time and language - turn ON Set time automatically if clock is still wrong." -ForegroundColor DarkYellow
     Write-Host ""
 }
 
