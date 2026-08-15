@@ -548,23 +548,17 @@ function Start-SteamApp([string]$SteamExe) {
  }
 }
 
-function Get-LuaFileForApp {
+function Get-LuaPathsForApp {
  param([string]$SteamDir, [string]$AppId)
- # stplug-in is Hammer's primary lua location; config\lua may be a stale copy.
- $candidates = @(
+ @(
  (Join-Path $SteamDir "config\stplug-in\$AppId.lua"),
  (Join-Path $SteamDir "config\lua\$AppId.lua")
  )
- $found = @()
- foreach ($candidate in $candidates) {
- if (Test-Path -LiteralPath $candidate) { $found += $candidate }
- }
- if ($found.Count -eq 0) { return $null }
- foreach ($candidate in $found) {
- $raw = Get-Content -LiteralPath $candidate -Raw -ErrorAction SilentlyContinue
- if ($raw -and ($raw -match '(?i)setManifestid\s*\(')) { return $candidate }
- }
- return $found[0]
+}
+
+function Get-ExistingLuaPathsForApp {
+ param([string]$SteamDir, [string]$AppId)
+ @(Get-LuaPathsForApp -SteamDir $SteamDir -AppId $AppId) | Where-Object { Test-Path -LiteralPath $_ }
 }
 
 function Get-SteamLibraryRoots {
@@ -685,6 +679,25 @@ function Get-ManifestLineInfo([string]$Line) {
  return "other"
 }
 
+function Apply-LuaManifestToggleLines {
+ param([string[]]$Lines, [bool]$PinManifest)
+ if ($PinManifest) {
+ # Updates ENABLED -> DISABLE: uncomment (pin the manifest)
+ foreach ($l in $Lines) {
+ if ((Get-ManifestLineInfo -Line $l) -eq "commented") {
+ $l -replace '(?i)--\s*setManifestid\s*\(', 'setManifestid('
+ } else { $l }
+ }
+ } else {
+ # Updates DISABLED (pinned) -> ENABLE: comment out (free the manifest)
+ foreach ($l in $Lines) {
+ if ((Get-ManifestLineInfo -Line $l) -eq "active") {
+ $l -replace '(?i)setManifestid\s*\(', '--setManifestid('
+ } else { $l }
+ }
+ }
+}
+
 function Show-LuaStatus {
  param([string[]]$Lines, [string]$Title)
  $active = 0
@@ -723,27 +736,26 @@ function Invoke-UpdateToggle([string]$SteamExe) {
  throw "Invalid AppID. Numbers only (example 413150)."
  }
 
- $luaFile = Get-LuaFileForApp -SteamDir $steamDir -AppId $appId
- if (-not $luaFile) {
- throw "Lua file not found for AppID $appId.`nExpected: $(Join-Path $steamDir "config\lua\$appId.lua") or $(Join-Path $steamDir "config\stplug-in\$appId.lua")"
+ $luaFiles = @(Get-ExistingLuaPathsForApp -SteamDir $steamDir -AppId $appId)
+ if ($luaFiles.Count -eq 0) {
+ throw "Lua file not found for AppID $appId.`nExpected: $(Join-Path $steamDir "config\stplug-in\$appId.lua") and/or $(Join-Path $steamDir "config\lua\$appId.lua")"
  }
- Write-Info "Found lua file: $luaFile"
+ Write-Info "Found lua file(s): $($luaFiles -join '; ')"
 
- $lines = @(Get-Content -LiteralPath $luaFile)
- $before = Show-LuaStatus -Lines $lines -Title "Current status:"
+ $sourceFile = $null
+ $before = $null
+ foreach ($candidate in $luaFiles) {
+ $probeLines = @(Get-Content -LiteralPath $candidate)
+ $probeStatus = Show-LuaStatus -Lines $probeLines -Title ("Current status ({0}):" -f ([IO.Path]::GetFileName($candidate)))
+ if (($probeStatus.Active + $probeStatus.Commented) -gt 0) {
+ $sourceFile = $candidate
+ $before = $probeStatus
+ break
+ }
+ }
 
- if (($before.Active + $before.Commented) -eq 0) {
- $otherLua = @()
- foreach ($rel in @("config\stplug-in\$appId.lua", "config\lua\$appId.lua")) {
- $p = Join-Path $steamDir $rel
- if ((Test-Path -LiteralPath $p) -and ($p -ne $luaFile)) { $otherLua += $p }
- }
- $hint = "The .lua file was found but has no setManifestid(...) lines."
- if ($otherLua.Count -gt 0) {
- $hint += "`nAlso checked: $($otherLua -join ', ')"
- }
- $hint += "`n`nThis usually means the game was added without a pinned manifest, or the .lua format is unsupported."
- throw $hint
+ if (-not $sourceFile) {
+ throw "No setManifestid lines found in any .lua for AppID $appId.`nChecked: $($luaFiles -join ', ')"
  }
 
  # State logic:
@@ -751,30 +763,17 @@ function Invoke-UpdateToggle([string]$SteamExe) {
  # --setManifestid(...) => game is NOT pinned => updates ENABLED (will update)
  # Toggle to the opposite state.
  $currentlyUpdating = ($before.Active -eq 0 -and $before.Commented -gt 0)
-
- if ($currentlyUpdating) {
- # Updates currently ENABLED -> DISABLE: uncomment (pin the manifest)
- $newLines = foreach ($l in $lines) {
- if ((Get-ManifestLineInfo -Line $l) -eq "commented") {
- $l -replace '(?i)--\s*setManifestid\s*\(', 'setManifestid('
- } else { $l }
- }
- $resultState = "DISABLED"
- } else {
- # Updates currently DISABLED (pinned) -> ENABLE: comment out (free the manifest)
- $newLines = foreach ($l in $lines) {
- if ((Get-ManifestLineInfo -Line $l) -eq "active") {
- $l -replace '(?i)setManifestid\s*\(', '--setManifestid('
- } else { $l }
- }
- $resultState = "ENABLED"
- }
+ $pinManifest = $currentlyUpdating
+ $resultState = if ($pinManifest) { "DISABLED" } else { "ENABLED" }
 
  $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+ foreach ($luaFile in $luaFiles) {
+ $lines = @(Get-Content -LiteralPath $luaFile)
+ $newLines = @(Apply-LuaManifestToggleLines -Lines $lines -PinManifest $pinManifest)
  [System.IO.File]::WriteAllLines($luaFile, [string[]]$newLines, $utf8NoBom)
  Write-Ok "Saved: $luaFile"
-
- $after = Show-LuaStatus -Lines $newLines -Title "New status:"
+ [void](Show-LuaStatus -Lines $newLines -Title ("New status ({0}):" -f ([IO.Path]::GetFileName($luaFile))))
+ }
 
  Write-Info "Stopping Steam before applying cache / manifest fixes..."
  Stop-SteamProcesses
@@ -797,21 +796,14 @@ function Invoke-UpdateToggle([string]$SteamExe) {
  Write-Host ""
  if ($resultState -eq "ENABLED") {
  Write-Ok "Updates ENABLED for AppID $appId."
- Write-Host " Lua de-pinned + appinfo.vdf cleared + appmanifest nudged." -ForegroundColor Green
+ Write-Host " Both stplug-in + config\lua de-pinned + appinfo.vdf cleared + appmanifest nudged." -ForegroundColor Green
  Write-Host " Steam should now detect an update if a newer build exists." -ForegroundColor Green
  Write-Host " If nothing appears, Library -> game -> Properties -> Installed Files -> Verify." -ForegroundColor DarkGray
  } else {
  Write-Ok "Updates DISABLED for AppID $appId."
+ Write-Host " Both stplug-in + config\lua pinned." -ForegroundColor Green
  Write-Host " Starting now, this AppID ($appId) will NOT receive the upcoming updates (pinned)." -ForegroundColor Green
  }
-}
-
-function Get-LuaPathsForApp {
- param([string]$SteamDir, [string]$AppId)
- @(
- (Join-Path $SteamDir "config\lua\$AppId.lua"),
- (Join-Path $SteamDir "config\stplug-in\$AppId.lua")
- )
 }
 
 function Invoke-DeleteLuaFiles([string]$SteamExe) {
