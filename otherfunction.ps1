@@ -225,15 +225,15 @@ function Get-ManifestAtRef([string]$Ref) {
 }
 
 function Get-VersionFromManifest([string]$ManifestText) {
- $m = [regex]::Match($ManifestText, '"version"\s+"(? \d+)"')
+ $m = [regex]::Match($ManifestText, '"version"\s+"(?<v>\d+)"')
  if (-not $m.Success) { throw "Version not found in manifest." }
  $m.Groups["v"].Value
 }
 
 function Get-FilesFromManifest([string]$ManifestText) {
  $seen = @{}
- foreach ($m in [regex]::Matches($ManifestText, '"file"\s+"(? [^"]+)"')) { $seen[$m.Groups["f"].Value] = $true }
- foreach ($m in [regex]::Matches($ManifestText, '"zipvz"\s+"(? [^"]+)"')) { $seen[$m.Groups["z"].Value] = $true }
+ foreach ($m in [regex]::Matches($ManifestText, '"file"\s+"(?<f>[^"]+)"')) { $seen[$m.Groups["f"].Value] = $true }
+ foreach ($m in [regex]::Matches($ManifestText, '"zipvz"\s+"(?<z>[^"]+)"')) { $seen[$m.Groups["z"].Value] = $true }
  return @($seen.Keys | Sort-Object)
 }
 
@@ -279,7 +279,7 @@ function Get-LocalClientVersion([string]$SteamDir) {
  foreach ($rel in @("package\steam_client_win64.manifest", "package\steam_client_publicbeta_win64.manifest")) {
  $file = Join-Path $SteamDir $rel
  if (-not (Test-Path -LiteralPath $file)) { continue }
- $m = [regex]::Match((Get-Content -LiteralPath $file -Raw), '"version"\s+"(? \d+)"')
+ $m = [regex]::Match((Get-Content -LiteralPath $file -Raw), '"version"\s+"(?<v>\d+)"')
  if ($m.Success) { return $m.Groups["v"].Value }
  }
  return $null
@@ -550,11 +550,21 @@ function Start-SteamApp([string]$SteamExe) {
 
 function Get-LuaFileForApp {
  param([string]$SteamDir, [string]$AppId)
- foreach ($rel in @("config\lua\$AppId.lua", "config\stplug-in\$AppId.lua")) {
- $candidate = Join-Path $SteamDir $rel
- if (Test-Path -LiteralPath $candidate) { return $candidate }
+ # stplug-in is Hammer's primary lua location; config\lua may be a stale copy.
+ $candidates = @(
+ (Join-Path $SteamDir "config\stplug-in\$AppId.lua"),
+ (Join-Path $SteamDir "config\lua\$AppId.lua")
+ )
+ $found = @()
+ foreach ($candidate in $candidates) {
+ if (Test-Path -LiteralPath $candidate) { $found += $candidate }
  }
- return $null
+ if ($found.Count -eq 0) { return $null }
+ foreach ($candidate in $found) {
+ $raw = Get-Content -LiteralPath $candidate -Raw -ErrorAction SilentlyContinue
+ if ($raw -and ($raw -match '(?i)setManifestid\s*\(')) { return $candidate }
+ }
+ return $found[0]
 }
 
 function Get-SteamLibraryRoots {
@@ -566,7 +576,7 @@ function Get-SteamLibraryRoots {
  if (Test-Path -LiteralPath $vdf) {
  try {
  $raw = Get-Content -LiteralPath $vdf -Raw -ErrorAction Stop
- foreach ($m in [regex]::Matches($raw, '"path"\s+"(? [^"]+)"')) {
+ foreach ($m in [regex]::Matches($raw, '"path"\s+"(?<p>[^"]+)"')) {
  $p = Normalize-SteamRoot ($m.Groups["p"].Value -replace '\\\\', '\')
  if (-not [string]::IsNullOrWhiteSpace($p) -and (Test-Path -LiteralPath $p)) {
  if (-not ($roots | Where-Object { $_.Equals($p, [StringComparison]::OrdinalIgnoreCase) })) {
@@ -634,7 +644,7 @@ function Invoke-ForceAppManifestUpdate {
  $bak = Backup-SteamFile -Path $acf -Tag ("update" + $AppId)
  $text = Get-Content -LiteralPath $acf -Raw
 
- $stateMatch = [regex]::Match($text, '"StateFlags"\s+"(? \d+)"')
+ $stateMatch = [regex]::Match($text, '"StateFlags"\s+"(?<v>\d+)"')
  $oldState = if ($stateMatch.Success) { [int]$stateMatch.Groups["v"].Value } else { 4 }
  # Bit 2 = UpdateRequired, bit 4 = FullyInstalled
  $newState = ($oldState -bor 2)
@@ -644,7 +654,7 @@ function Invoke-ForceAppManifestUpdate {
  $text2 = [regex]::Replace($text2, '"TargetBuildID"\s+"\d+"', ('"TargetBuildID"' + "`t`t" + '"0"'), 1)
 
  $depotManifest = $null
- $dm = [regex]::Match($text2, '"InstalledDepots"\s*\{[\s\S]*?"manifest"\s+"(? \d+)"')
+ $dm = [regex]::Match($text2, '"InstalledDepots"\s*\{[\s\S]*?"manifest"\s+"(?<m>\d+)"')
  if ($dm.Success) { $depotManifest = $dm.Groups["m"].Value }
 
  $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
@@ -669,8 +679,9 @@ function Invoke-EnableGameUpdateFixes {
 
 function Get-ManifestLineInfo([string]$Line) {
  # Returns a state for a line: "active", "commented", or "other"
- if ($Line -match '^\s*--\s*setManifestid\s*\(') { return "commented" }
- if ($Line -match '^\s*setManifestid\s*\(') { return "active" }
+ # Match anywhere on the line (some lua files put addappid + setManifestid together).
+ if ($Line -match '(?i)--\s*setManifestid\s*\(') { return "commented" }
+ if ($Line -match '(?i)setManifestid\s*\(') { return "active" }
  return "other"
 }
 
@@ -683,7 +694,7 @@ function Show-LuaStatus {
  foreach ($l in $Lines) {
  $state = Get-ManifestLineInfo -Line $l
  if ($state -eq "other") { continue }
- $appMatch = [regex]::Match($l, 'setManifestid\s*\(\s*(? \d+)')
+ $appMatch = [regex]::Match($l, '(?i)setManifestid\s*\(\s*(?<id>\d+)')
  $appLabel = if ($appMatch.Success) { $appMatch.Groups["id"].Value } else { "?" }
  if ($state -eq "commented") {
  $commented++
@@ -722,7 +733,17 @@ function Invoke-UpdateToggle([string]$SteamExe) {
  $before = Show-LuaStatus -Lines $lines -Title "Current status:"
 
  if (($before.Active + $before.Commented) -eq 0) {
- throw "No setManifestid lines found in $([IO.Path]::GetFileName($luaFile)). Nothing to enable/disable."
+ $otherLua = @()
+ foreach ($rel in @("config\stplug-in\$appId.lua", "config\lua\$appId.lua")) {
+ $p = Join-Path $steamDir $rel
+ if ((Test-Path -LiteralPath $p) -and ($p -ne $luaFile)) { $otherLua += $p }
+ }
+ $hint = "The .lua file was found but has no setManifestid(...) lines."
+ if ($otherLua.Count -gt 0) {
+ $hint += "`nAlso checked: $($otherLua -join ', ')"
+ }
+ $hint += "`n`nThis usually means the game was added without a pinned manifest, or the .lua format is unsupported."
+ throw $hint
  }
 
  # State logic:
@@ -735,7 +756,7 @@ function Invoke-UpdateToggle([string]$SteamExe) {
  # Updates currently ENABLED -> DISABLE: uncomment (pin the manifest)
  $newLines = foreach ($l in $lines) {
  if ((Get-ManifestLineInfo -Line $l) -eq "commented") {
- $l -replace '^(\s*)--\s*(setManifestid\s*\()', '$1$2'
+ $l -replace '(?i)--\s*setManifestid\s*\(', 'setManifestid('
  } else { $l }
  }
  $resultState = "DISABLED"
@@ -743,7 +764,7 @@ function Invoke-UpdateToggle([string]$SteamExe) {
  # Updates currently DISABLED (pinned) -> ENABLE: comment out (free the manifest)
  $newLines = foreach ($l in $lines) {
  if ((Get-ManifestLineInfo -Line $l) -eq "active") {
- $l -replace '^(\s*)(setManifestid\s*\()', '$1--$2'
+ $l -replace '(?i)setManifestid\s*\(', '--setManifestid('
  } else { $l }
  }
  $resultState = "ENABLED"
