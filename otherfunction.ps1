@@ -681,21 +681,44 @@ function Get-ManifestLineInfo([string]$Line) {
 
 function Apply-LuaManifestToggleLines {
  param([string[]]$Lines, [bool]$PinManifest)
- if ($PinManifest) {
- # Updates ENABLED -> DISABLE: uncomment (pin the manifest)
+ $out = New-Object System.Collections.Generic.List[string]
  foreach ($l in $Lines) {
+ if ($PinManifest) {
  if ((Get-ManifestLineInfo -Line $l) -eq "commented") {
- $l -replace '(?i)--\s*setManifestid\s*\(', 'setManifestid('
- } else { $l }
+ [void]$out.Add(($l -replace '(?i)--\s*setManifestid\s*\(', 'setManifestid('))
+ } else {
+ [void]$out.Add($l)
  }
  } else {
- # Updates DISABLED (pinned) -> ENABLE: comment out (free the manifest)
- foreach ($l in $Lines) {
  if ((Get-ManifestLineInfo -Line $l) -eq "active") {
- $l -replace '(?i)setManifestid\s*\(', '--setManifestid('
- } else { $l }
+ [void]$out.Add(($l -replace '(?i)setManifestid\s*\(', '--setManifestid('))
+ } else {
+ [void]$out.Add($l)
  }
  }
+ }
+ return ,$out.ToArray()
+}
+
+function Get-LuaManifestStateSummary {
+ param([string[]]$Lines)
+ $active = 0
+ $commented = 0
+ foreach ($l in $Lines) {
+ $state = Get-ManifestLineInfo -Line $l
+ if ($state -eq "active") { $active++ }
+ elseif ($state -eq "commented") { $commented++ }
+ }
+ return [pscustomobject]@{ Active = $active; Commented = $commented }
+}
+
+function Save-LuaFileLines {
+ param([string]$Path, [string[]]$Lines)
+ if (Test-Path -LiteralPath $Path) {
+ try { attrib -R $Path 2>$null | Out-Null } catch { }
+ }
+ $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+ [System.IO.File]::WriteAllLines($Path, [string[]]$Lines, $utf8NoBom)
 }
 
 function Show-LuaStatus {
@@ -742,42 +765,48 @@ function Invoke-UpdateToggle([string]$SteamExe) {
  }
  Write-Info "Found lua file(s): $($luaFiles -join '; ')"
 
- $sourceFile = $null
- $before = $null
+ $totalActive = 0
+ $totalCommented = 0
  foreach ($candidate in $luaFiles) {
  $probeLines = @(Get-Content -LiteralPath $candidate)
- $probeStatus = Show-LuaStatus -Lines $probeLines -Title ("Current status ({0}):" -f ([IO.Path]::GetFileName($candidate)))
- if (($probeStatus.Active + $probeStatus.Commented) -gt 0) {
- $sourceFile = $candidate
- $before = $probeStatus
- break
- }
+ $probeStatus = Get-LuaManifestStateSummary -Lines $probeLines
+ $totalActive += $probeStatus.Active
+ $totalCommented += $probeStatus.Commented
+ [void](Show-LuaStatus -Lines $probeLines -Title ("Current status ({0}):" -f ([IO.Path]::GetFileName($candidate))))
  }
 
- if (-not $sourceFile) {
+ if (($totalActive + $totalCommented) -eq 0) {
  throw "No setManifestid lines found in any .lua for AppID $appId.`nChecked: $($luaFiles -join ', ')"
  }
 
- # State logic:
- # active setManifestid(...) => game is PINNED => updates DISABLED (not updating)
- # --setManifestid(...) => game is NOT pinned => updates ENABLED (will update)
- # Toggle to the opposite state.
- $currentlyUpdating = ($before.Active -eq 0 -and $before.Commented -gt 0)
- $pinManifest = $currentlyUpdating
+ # active setManifestid(...) => pinned => updates DISABLED
+ # --setManifestid(...) => not pinned => updates ENABLED
+ # If any active line exists, comment out all active lines (enable updates).
+ # If only commented lines exist, uncomment them (pin / disable updates).
+ $pinManifest = ($totalActive -eq 0 -and $totalCommented -gt 0)
  $resultState = if ($pinManifest) { "DISABLED" } else { "ENABLED" }
 
- $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+ Write-Info "Stopping Steam before editing .lua files..."
+ Stop-SteamProcesses
+ Start-Sleep -Seconds 2
+
  foreach ($luaFile in $luaFiles) {
  $lines = @(Get-Content -LiteralPath $luaFile)
  $newLines = @(Apply-LuaManifestToggleLines -Lines $lines -PinManifest $pinManifest)
- [System.IO.File]::WriteAllLines($luaFile, [string[]]$newLines, $utf8NoBom)
+ Save-LuaFileLines -Path $luaFile -Lines $newLines
  Write-Ok "Saved: $luaFile"
  [void](Show-LuaStatus -Lines $newLines -Title ("New status ({0}):" -f ([IO.Path]::GetFileName($luaFile))))
  }
 
- Write-Info "Stopping Steam before applying cache / manifest fixes..."
- Stop-SteamProcesses
- Start-Sleep -Seconds 2
+ $verifyFailed = @()
+ foreach ($luaFile in $luaFiles) {
+ $check = Get-LuaManifestStateSummary -Lines @(Get-Content -LiteralPath $luaFile)
+ if ($resultState -eq "ENABLED" -and $check.Active -gt 0) { $verifyFailed += $luaFile }
+ if ($resultState -eq "DISABLED" -and $check.Commented -gt 0) { $verifyFailed += $luaFile }
+ }
+ if ($verifyFailed.Count -gt 0) {
+ throw "Could not update setManifestid in: $($verifyFailed -join '; ')`nRun Other Functions as Administrator (Steam is under Program Files)."
+ }
 
  if ($resultState -eq "ENABLED") {
  # De-pin alone is not enough: Steam keeps the old pinned GID in
