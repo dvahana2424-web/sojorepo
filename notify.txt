@@ -1,5 +1,5 @@
 Quickplay Users Only! 🛠️
-Missing games or search not working on Server 2? Update your client now to version 2.7.2 to get the latest version with the fix:
+Missing games or search not working on Server 2? Update your client now to version 2.7.4 to get the latest version with the fix:
 Windows: Re-paste your original install command in PowerShell: 💻
 PowerShell
 irm https://raw.githubusercontent.com/hammerwebsite12/hammerfree/quickplay/install.ps1 | iex
