@@ -1,8 +1,5 @@
 Quickplay Users Only! 🛠️
 
-Server 2, Is Down/Maintenance currently games will not show if you are using Server 2, ill update when server 2 is up
-for Now use Server 1 - 8/31/26 8:00AM
-
 Missing games or search not working on Server 2? Update your client now to version 2.7.4 to get the latest version with the fix:
 Windows: Re-paste your original install command in PowerShell: 💻
 https://streamable.com/1y69ng - VIDEO GUIDE HOW
