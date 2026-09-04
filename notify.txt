@@ -1,4 +1,4 @@
-Quickplay Users Only! 🛠️
+Quickplay Users Only! 🛠️ (FOR QUICKUSER BUYER ONLY)
 
 Missing games or search not working on Server 2? Update your client now to version 2.7.4 to get the latest version with the fix:
 Windows: Re-paste your original install command in PowerShell: 💻
