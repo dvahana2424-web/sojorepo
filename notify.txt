@@ -4,7 +4,7 @@ Getting a "No internet Connection Error" download error due to a recent Steam pa
 
 Update to Hammer v4.2 (or newer).
 
-Enable unlock mode 3 in the settings.
+Enable unlock mode 3 in the switch menu.
 
 Re-add your games using Hammer 4.2 (do this for each affected game).
 
