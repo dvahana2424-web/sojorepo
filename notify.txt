@@ -1,6 +1,6 @@
 📢 HAMMER USERS ADVISORY 🛠️
 
-Getting a "No internet" download error due to a recent Steam patch? Here is the quick fix:
+Getting a "No internet Connection Error" download error due to a recent Steam patch? Here is the quick fix:
 
 Update to Hammer v4.2 (or newer).
 
