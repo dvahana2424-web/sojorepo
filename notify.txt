@@ -6,6 +6,8 @@ Update to Hammer v4.2 (or newer).
 
 Turn OFF unlock mode 3 then Turn On again
 
+Try Downloading again, or Re add your game using Hammer
+
 ⚠️ Do not enable game updates for now.
 
 **********************************************
