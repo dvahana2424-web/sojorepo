@@ -13,12 +13,12 @@ $CdnBase = 'https://hammer-cdn.monzikmonzik.workers.dev'
 $GitHubRepo = 'dvahana2424-web/hammerdeckydowngrade'
 $GitHubBranch = 'HammerRetro-1.0'
 $InstallDir = 'C:\Program Files (x86)\HammerRetro'
-$AppName = 'HammerRetro 1.0'
-$Version = '1.0'
+$AppName = 'HammerRetro 1.2.4'
+$Version = '1.2.4'
 $Publisher = 'HammerRetro'
-$ExeName = 'HammerRetro-1.0.0.exe'
+$ExeName = 'HammerRetro-1.2.4.exe'
 $InstalledExeName = 'HammerRetro.exe'
-$ExpectedBytes = 0
+$ExpectedBytes = 19848493
 
 Write-Host '==============================================' -ForegroundColor Cyan
 Write-Host " Installing $AppName" -ForegroundColor Cyan
