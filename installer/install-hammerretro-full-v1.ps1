@@ -18,7 +18,7 @@ $Version = '1.2.4'
 $Publisher = 'HammerRetro'
 $ExeName = 'HammerRetro-1.2.4.exe'
 $InstalledExeName = 'HammerRetro.exe'
-$ExpectedBytes = 19848493
+$ExpectedBytes = 19847477
 
 Write-Host '==============================================' -ForegroundColor Cyan
 Write-Host " Installing $AppName" -ForegroundColor Cyan
