@@ -1,17 +1,3 @@
-📢 HAMMER USERS ADVISORY 🛠️
-
-Getting a "No internet Connection Error" download error due to a recent Steam patch? Here is the quick fix:
-
-Update to Hammer v4.2 (or newer).
-
-Turn OFF unlock mode 3 then Turn On again
-
-Try Downloading again, or Re add your game using Hammer
-
-⚠️ Do not enable game updates for now.
-
-**********************************************
-
 Quickplay Users Only! 🛠️ (FOR QUICKUSER BUYER ONLY)
 
 Missing games or search not working on Server 2? Update your client now to version 2.7.4 to get the latest version with the fix:
