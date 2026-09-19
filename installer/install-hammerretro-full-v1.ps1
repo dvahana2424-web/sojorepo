@@ -1,5 +1,5 @@
 <#
-    HammerRetro 1.0 full installer (served from CDN — do not run directly).
+    HammerRetro 1.2.7 full installer (served from CDN — do not run directly).
     Users should use:
       irm https://raw.githubusercontent.com/dvahana2424-web/hammerdeckydowngrade/HammerRetro-1.0/install.ps1 | iex
 #>
@@ -13,12 +13,12 @@ $CdnBase = 'https://hammer-cdn.monzikmonzik.workers.dev'
 $GitHubRepo = 'dvahana2424-web/hammerdeckydowngrade'
 $GitHubBranch = 'HammerRetro-1.0'
 $InstallDir = 'C:\Program Files (x86)\HammerRetro'
-$AppName = 'HammerRetro 1.2.6'
-$Version = '1.2.6'
+$AppName = 'HammerRetro 1.2.7'
+$Version = '1.2.7'
 $Publisher = 'HammerRetro'
-$ExeName = 'HammerRetro-1.2.6.exe'
+$ExeName = 'HammerRetro-1.2.7.exe'
 $InstalledExeName = 'HammerRetro.exe'
-$ExpectedBytes = 19854469
+$ExpectedBytes = 20609181
 
 Write-Host '==============================================' -ForegroundColor Cyan
 Write-Host " Installing $AppName" -ForegroundColor Cyan
@@ -63,7 +63,7 @@ function Get-FileHttp([string]$url, [string]$dest, [string]$label) {
     $resp = $null; $rs = $null; $fs = $null
     try {
         $req = [System.Net.HttpWebRequest]::Create($url)
-        $req.UserAgent = 'HammerRetroInstaller/1.0'
+        $req.UserAgent = 'HammerRetroInstaller/1.2.7'
         $req.Accept = 'application/octet-stream,*/*'
         $req.Timeout = 60000
         $req.ReadWriteTimeout = 600000
@@ -111,7 +111,7 @@ function Get-FileHttp([string]$url, [string]$dest, [string]$label) {
 function Get-FileCurl([string]$url, [string]$dest) {
     if (-not (Get-Command curl.exe -ErrorAction SilentlyContinue)) { return $false }
     & curl.exe -fL -sS --retry 3 --retry-delay 5 --connect-timeout 30 `
-        -A 'HammerRetroInstaller/1.0' -o $dest $url
+        -A 'HammerRetroInstaller/1.2.7' -o $dest $url
     if ($LASTEXITCODE -ne 0) { return $false }
     return (Test-Path $dest) -and ((Get-Item $dest).Length -gt 0)
 }
@@ -136,7 +136,7 @@ function Get-File($urls, $dest, $label) {
             if (Get-FileCurl $url $dest) { return }
 
             try {
-                Invoke-WebRequest -Uri $url -OutFile $dest -UserAgent 'HammerRetroInstaller/1.0' -UseBasicParsing | Out-Null
+                Invoke-WebRequest -Uri $url -OutFile $dest -UserAgent 'HammerRetroInstaller/1.2.7' -UseBasicParsing | Out-Null
                 if ((Test-Path $dest) -and ((Get-Item $dest).Length -gt 0)) { return }
             } catch {
                 $lastErr = $_
