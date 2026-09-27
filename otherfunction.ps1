@@ -1056,7 +1056,7 @@ function Invoke-UpgradeHammer {
     Write-Host ""
     Write-Host " Downloads and installs the latest Hammer build." -ForegroundColor Gray
     Write-Host " Syncs Windows date/time (Set time automatically)." -ForegroundColor Gray
-    Write-Host " Steam and Hammer will close during the upgrade (~100 MB download)." -ForegroundColor Gray
+    Write-Host " Installs Hammer 4.3 (~100 MB download). Steam and Hammer will close." -ForegroundColor Gray
     Write-Host ""
     $confirm = (Read-Host " Type YES to start upgrade").Trim()
     if ($confirm.ToUpperInvariant() -ne 'YES') {

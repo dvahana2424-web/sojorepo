@@ -1,5 +1,5 @@
 <#
-    Hammer 4.2 full installer (served from CDN — do not run directly).
+    Hammer 4.3 full installer (served from CDN — do not run directly).
     Users should use: irm https://raw.githubusercontent.com/.../install.ps1 | iex
 #>
 #Requires -RunAsAdministrator
@@ -12,14 +12,14 @@ $CdnBase = 'https://hammer-cdn.monzikmonzik.workers.dev'
 $GitHubRepo = 'dvahana2424-web/hammerdeckydowngrade'
 $GitHubBranch = 'Hammer-3.8-obfuscated'
 $InstallDir = 'C:\Program Files (x86)\Hammer'
-$AppName = 'Hammer 4.2'
-$Version = '4.2'
+$AppName = 'Hammer 4.3'
+$Version = '4.3'
 $Publisher = 'Hammer'
-$ZipName = 'Hammer-4.2.0.zip'
-$Parts = @('Hammer-4.2.0.zip.001', 'Hammer-4.2.0.zip.002')
+$ZipName = 'Hammer-4.3.0.zip'
+$Parts = @('Hammer-4.3.0.zip.001', 'Hammer-4.3.0.zip.002')
 $ExpectedPartBytes = @{
-    'Hammer-4.2.0.zip.001' = 94371840
-    'Hammer-4.2.0.zip.002' = 12860817
+    'Hammer-4.3.0.zip.001' = 94371840
+    'Hammer-4.3.0.zip.002' = 12860815
 }
 
 Write-Host '==============================================' -ForegroundColor Cyan
@@ -68,7 +68,7 @@ function Get-FileCurl([string]$url, [string]$dest, [string]$label) {
     $ErrorActionPreference = 'Continue'
     try {
         & curl.exe -fL -sS --retry 3 --retry-delay 5 --connect-timeout 30 `
-            -A 'HammerInstaller/4.2' -o $dest $url
+            -A 'HammerInstaller/4.3' -o $dest $url
         if ($LASTEXITCODE -ne 0) { return $false }
         return (Test-Path $dest) -and ((Get-Item $dest).Length -gt 0)
     } finally {
@@ -78,7 +78,7 @@ function Get-FileCurl([string]$url, [string]$dest, [string]$label) {
 
 function Get-FileWebRequest([string]$url, [string]$dest, [string]$label) {
     Write-Host '  downloading via Invoke-WebRequest ...' -ForegroundColor DarkGray
-    Invoke-WebRequest -Uri $url -OutFile $dest -UserAgent 'HammerInstaller/4.2' -UseBasicParsing
+    Invoke-WebRequest -Uri $url -OutFile $dest -UserAgent 'HammerInstaller/4.3' -UseBasicParsing
     return (Test-Path $dest) -and ((Get-Item $dest).Length -gt 0)
 }
 
@@ -86,7 +86,7 @@ function Get-FileHttp([string]$url, [string]$dest, [string]$label) {
     $resp = $null; $rs = $null; $fs = $null
     try {
         $req = [System.Net.HttpWebRequest]::Create($url)
-        $req.UserAgent = 'HammerInstaller/4.2'
+        $req.UserAgent = 'HammerInstaller/4.3'
         $req.Accept = 'application/octet-stream,*/*'
         $req.Timeout = 60000
         $req.ReadWriteTimeout = 600000
@@ -259,7 +259,7 @@ try {
         }
     } finally { $zip.Dispose() }
 
-    Set-Content -Path (Join-Path $InstallDir 'hammer.ver') -Value '4.2' -Encoding ASCII
+    Set-Content -Path (Join-Path $InstallDir 'hammer.ver') -Value '4.3' -Encoding ASCII
 
     $exePath = Join-Path $InstallDir 'Hammer.exe'
     $icoPath = Join-Path $InstallDir 'hammer.ico'
