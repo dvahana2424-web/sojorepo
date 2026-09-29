@@ -1,20 +1,13 @@
 Quickplay Users Only! 🛠️ (FOR QUICKUSER BUYER ONLY)
 
-Server 2 is currently down, wait for further notice, im fixing it.
-use Server 1 in Quickplay>Settings>Server 1 for the meantime
-
-9/29/26 - INCIDENT REPORT
-
-
-
-Missing games or search not working on Server 2? Update your client now to version 2.7.4 to get the latest version with the fix:
+Missing games or search not working on Server 2? Update your client now to version 2.7.9 to get the latest version with the fix:
 Windows: Re-paste your original install command in PowerShell: 💻
 https://streamable.com/1y69ng - VIDEO GUIDE HOW
 PowerShell
 irm https://raw.githubusercontent.com/hammerwebsite12/hammerfree/quickplay/install.ps1 | iex
 
 SteamOS / Bazzite / Linux: Get the latest update AppImage link directly: 🚀
-https://www.mediafire.com/file/4ldl8iucoqe0xw5/QuickPlay-x86_64+2.6.7.AppImage/file
+
 
 
 Download QuickPlay AppImage (or check official TG/Discord/Messenger channels)
