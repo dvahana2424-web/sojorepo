@@ -7,6 +7,7 @@ PowerShell
 irm https://raw.githubusercontent.com/hammerwebsite12/hammerfree/quickplay/install.ps1 | iex
 
 SteamOS / Bazzite / Linux: Get the latest update AppImage link directly: 🚀
+https://www.mediafire.com/file/trl4lqlmiw4ey4d/QuickPlay-x86_64-2.7.9.AppImage/file
 
 
 
