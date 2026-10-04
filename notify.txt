@@ -1,6 +1,6 @@
 Quickplay Users Only! 🛠️ (FOR QUICKUSER BUYER ONLY)
 
-Missing games or search not working on Server 2? Update your client now to version 2.7.9 to get the latest version with the fix:
+ Update your client now to version 2.8.0 to get the latest version
 Windows: Re-paste your original install command in PowerShell: 💻
 https://streamable.com/1y69ng - VIDEO GUIDE HOW
 PowerShell
