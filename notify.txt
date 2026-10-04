@@ -1,6 +1,6 @@
 Quickplay Users Only! 🛠️ (FOR QUICKUSER BUYER ONLY)
 
- Update your client now to version 2.8.0 to get the latest version
+Update your client now to version 2.8.0 to get the latest version
 Windows: Re-paste your original install command in PowerShell: 💻
 https://streamable.com/1y69ng - VIDEO GUIDE HOW
 PowerShell
