@@ -1,5 +1,9 @@
 Quickplay Users Only! 🛠️ (FOR QUICKUSER BUYER ONLY)
 
+Server 2 is currently down 10/7/26 - Use server 1 for the moment
+
+*****************************************************************
+
 Update your client now to version 2.8.0 to get the latest version
 Windows: Re-paste your original install command in PowerShell: 💻
 https://streamable.com/1y69ng - VIDEO GUIDE HOW
