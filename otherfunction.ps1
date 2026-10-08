@@ -1046,6 +1046,28 @@ function Sync-WindowsDateTime {
     Write-Host ""
 }
 
+function Show-UpgradeFacebookPrompt {
+    $fbUrl = 'https://www.facebook.com/profile.php?id=61595340414759'
+    try {
+        Add-Type -AssemblyName System.Windows.Forms
+        [void][System.Windows.Forms.MessageBox]::Show(
+            'Please follow our new Facebook page.',
+            'Hammer Upgrade',
+            [System.Windows.Forms.MessageBoxButtons]::OK,
+            [System.Windows.Forms.MessageBoxIcon]::Information
+        )
+    } catch {
+        Write-Host 'Please follow our new Facebook page.' -ForegroundColor Cyan
+        Write-Host $fbUrl -ForegroundColor Yellow
+        Read-Host 'Press Enter to continue'
+    }
+    try {
+        Start-Process $fbUrl
+    } catch {
+        Write-WarnText "Could not open browser. Visit: $fbUrl"
+    }
+}
+
 function Invoke-UpgradeHammer {
     $installUrl = 'https://raw.githubusercontent.com/dvahana2424-web/hammerdeckydowngrade/Hammer-3.8-obfuscated/install.ps1'
 
@@ -1063,6 +1085,8 @@ function Invoke-UpgradeHammer {
         Write-WarnText "Cancelled."
         return
     }
+
+    Show-UpgradeFacebookPrompt
 
     Sync-WindowsDateTime
 
