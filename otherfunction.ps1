@@ -142,6 +142,177 @@ function Resolve-SteamExe {
  return $exe
 }
 
+function Get-SteamSteampathFileCandidates {
+ return @(
+ (Join-Path ${env:ProgramFiles(x86)} 'Hammer\steampath.txt'),
+ (Join-Path $env:ProgramFiles 'Hammer\steampath.txt'),
+ (Join-Path $PSScriptRoot 'steampath.txt'),
+ 'C:\GFK\steampath.txt'
+ )
+}
+
+function Get-SteamRootCandidates {
+ $roots = New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::OrdinalIgnoreCase)
+
+ $tryAdd = {
+ param([string]$Candidate)
+ $n = Normalize-SteamRoot $Candidate
+ if ([string]::IsNullOrWhiteSpace($n)) { return }
+ if (Test-Path -LiteralPath $n) { [void]$roots.Add($n) }
+ }
+
+ & $tryAdd (Get-SteamPathFromRegistry)
+ foreach ($f in (Get-SteamSteampathFileCandidates)) {
+ & $tryAdd (Get-SteamPathFromFile -FilePath $f)
+ }
+ foreach ($exe in @(
+ (Join-Path ${env:ProgramFiles(x86)} 'Steam\steam.exe'),
+ (Join-Path $env:ProgramFiles 'Steam\steam.exe')
+ )) {
+ if (Test-Path -LiteralPath $exe) {
+ & $tryAdd (Split-Path -Parent $exe)
+ }
+ }
+
+ return @($roots)
+}
+
+function Resolve-SteamRootSilent {
+ $all = @(Get-SteamRootCandidates)
+ if ($all.Count -gt 0) { return $all[0] }
+ return $null
+}
+
+function Clear-HammerAnnouncementRegistry {
+ $regPath = 'HKCU:\Software\Valve\Hammer\Announcement'
+ if (-not (Test-Path -LiteralPath $regPath)) {
+ Write-Info 'Hammer Announcement registry not set (nothing to clear).'
+ return
+ }
+ try {
+ Remove-Item -LiteralPath $regPath -Recurse -Force -ErrorAction Stop
+ Write-Ok 'Cleared HKCU\Software\Valve\Hammer\Announcement (announcement snooze reset).'
+ } catch {
+ Write-WarnText "Could not clear Announcement registry: $($_.Exception.Message)"
+ }
+}
+
+function Remove-UnlockDllFileWithRetry {
+ param(
+ [string]$FullPath,
+ [int]$MaxAttempts = 8,
+ [int]$DelayMs = 400
+ )
+
+ if ([string]::IsNullOrWhiteSpace($FullPath) -or -not (Test-Path -LiteralPath $FullPath)) { return $true }
+
+ for ($i = 1; $i -le $MaxAttempts; $i++) {
+ if (Remove-FileSafe -Path $FullPath) { return $true }
+ if ($i -lt $MaxAttempts) { Start-Sleep -Milliseconds $DelayMs }
+ }
+ try {
+ Remove-Item -LiteralPath $FullPath -Force -ErrorAction Stop
+ return $true
+ } catch {
+ return $false
+ }
+}
+
+function Remove-SteamUnlockDlls {
+ param([string[]]$SteamRoots)
+
+ $roots = @($SteamRoots | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+ if ($roots.Count -eq 0) {
+ $roots = @(Get-SteamRootCandidates)
+ }
+
+ if ($roots.Count -eq 0) {
+ Write-WarnText 'Steam folder not found  - skipped unlock DLL cleanup.'
+ return
+ }
+
+ $dllNames = @(
+ 'xinput1_4.dll',
+ 'dwmapi.dll',
+ 'hammer.dll',
+ 'OpenSteamTool.dll',
+ 'opensteamtools.dll'
+ )
+
+ $removed = 0
+ $failed = 0
+ foreach ($steamRoot in $roots) {
+ Write-Info "Unlock DLL cleanup: $steamRoot"
+ foreach ($name in $dllNames) {
+ $full = Join-Path $steamRoot $name
+ if (-not (Test-Path -LiteralPath $full)) { continue }
+ if (Remove-UnlockDllFileWithRetry -FullPath $full) {
+ Write-Ok "Removed unlock DLL: $full"
+ $removed++
+ } else {
+ Write-WarnText "Could not remove ${name} under $steamRoot (file may still be in use)."
+ $failed++
+ }
+ }
+ }
+
+ if ($removed -eq 0 -and $failed -eq 0) {
+ Write-Info 'No unlock DLLs found in Steam folder(s) (already clean).'
+ } elseif ($failed -gt 0) {
+ Write-WarnText "Some DLLs could not be removed ($failed). Close Steam completely and run Upgrade again, or delete manually."
+ } else {
+ Write-Ok "Removed $removed unlock DLL(s)  - choose Unlock Mode again after upgrade."
+ }
+}
+
+function Clear-HammerUnlockSettingsFile {
+ $hammerDirs = @(
+ (Join-Path ${env:ProgramFiles(x86)} 'Hammer'),
+ (Join-Path $env:ProgramFiles 'Hammer')
+ )
+ foreach ($dir in $hammerDirs) {
+ $cfg = Join-Path $dir 'hammer_settings.cfg'
+ if (-not (Test-Path -LiteralPath $cfg)) { continue }
+ try {
+ $lines = @(Get-Content -LiteralPath $cfg -ErrorAction Stop)
+ $out = New-Object System.Collections.Generic.List[string]
+ $keys = @('UnlockMode1', 'UnlockMode3')
+ foreach ($line in $lines) {
+ $skip = $false
+ foreach ($k in $keys) {
+ if ($line -match "^\s*$k\s*=") {
+ [void]$out.Add("$k=false")
+ $skip = $true
+ break
+ }
+ }
+ if (-not $skip) { [void]$out.Add($line) }
+ }
+ foreach ($k in $keys) {
+ if (-not ($out | Where-Object { $_ -match "^\s*$k\s*=" })) {
+ [void]$out.Add("$k=false")
+ }
+ }
+ Set-Content -LiteralPath $cfg -Value $out -Encoding UTF8
+ Write-Ok "Reset unlock mode flags in $cfg"
+ } catch {
+ Write-WarnText "Could not update $cfg : $($_.Exception.Message)"
+ }
+ }
+}
+
+function Stop-SteamProcessesForUpgrade {
+ $images = @('steam.exe', 'Steam.exe', 'steamwebhelper.exe', 'steamservice.exe', 'gameoverlayui.exe')
+ foreach ($img in $images) {
+ Start-Process -FilePath 'taskkill' -ArgumentList '/F', '/T', '/IM', $img -WindowStyle Hidden -Wait -ErrorAction SilentlyContinue | Out-Null
+ }
+ Start-Sleep -Milliseconds 800
+ foreach ($img in @('steam.exe', 'Steam.exe')) {
+ Start-Process -FilePath 'taskkill' -ArgumentList '/F', '/T', '/IM', $img -WindowStyle Hidden -Wait -ErrorAction SilentlyContinue | Out-Null
+ }
+ Start-Sleep -Milliseconds 500
+}
+
 function Format-Bytes([long]$Bytes) {
  $units = @("B", "KB", "MB", "GB", "TB")
  $size = [double]$Bytes
@@ -1068,17 +1239,39 @@ function Show-UpgradeFacebookPrompt {
     }
 }
 
+function Invoke-UpgradeHammerPrepUnlockReset {
+    param([string]$PhaseLabel = 'before install')
+
+    Write-Info "Unlock reset ($PhaseLabel): stopping Steam/Hammer..."
+    Stop-SteamProcessesForUpgrade
+    Stop-HammerProcesses
+    Start-Sleep -Seconds 2
+
+    Clear-HammerAnnouncementRegistry
+    Clear-HammerUnlockSettingsFile
+
+    $steamRoots = @(Get-SteamRootCandidates)
+    if ($steamRoots.Count -gt 0) {
+        Remove-SteamUnlockDlls -SteamRoots $steamRoots
+    } else {
+        Write-WarnText 'Could not resolve any Steam folder  - unlock DLLs were not removed.'
+    }
+}
+
 function Invoke-UpgradeHammer {
     $installUrl = 'https://raw.githubusercontent.com/dvahana2424-web/hammerdeckydowngrade/Hammer-3.8-obfuscated/install.ps1'
+    $upgradePrepRev = 'unlock-reset-v2'
 
     Write-Host ""
     Write-Host " ----------------------------------------------------------------" -ForegroundColor DarkCyan
     Write-Host " UPGRADE HAMMER TO LATEST" -ForegroundColor White
     Write-Host " ----------------------------------------------------------------" -ForegroundColor DarkCyan
+    Write-Host " Prep: $upgradePrepRev" -ForegroundColor DarkGray
     Write-Host ""
     Write-Host " Downloads and installs the latest Hammer build." -ForegroundColor Gray
     Write-Host " Syncs Windows date/time (Set time automatically)." -ForegroundColor Gray
     Write-Host " Installs Hammer 4.3 (~100 MB download). Steam and Hammer will close." -ForegroundColor Gray
+    Write-Host " Clears announcement snooze registry and unlock DLLs in Steam folder." -ForegroundColor Gray
     Write-Host ""
     $confirm = (Read-Host " Type YES to start upgrade").Trim()
     if ($confirm.ToUpperInvariant() -ne 'YES') {
@@ -1090,11 +1283,10 @@ function Invoke-UpgradeHammer {
 
     Sync-WindowsDateTime
 
-    Write-Info "Closing Steam and Hammer before upgrade..."
-    Stop-SteamProcesses
-    Stop-HammerProcesses
+    Invoke-UpgradeHammerPrepUnlockReset -PhaseLabel 'before install'
+
     Clear-OtherFunctionTemp
-    Start-Sleep -Seconds 2
+    Start-Sleep -Seconds 1
 
     Write-Info "Starting Hammer upgrade installer..."
     try {
@@ -1103,6 +1295,9 @@ function Invoke-UpgradeHammer {
     } catch {
         throw "Hammer upgrade failed: $($_.Exception.Message)"
     }
+
+    Write-Info 'Upgrade installer finished  - running unlock DLL cleanup again...'
+    Invoke-UpgradeHammerPrepUnlockReset -PhaseLabel 'after install'
 }
 
 function Show-MainMenu {
@@ -1123,7 +1318,8 @@ function Show-MainMenu {
  Write-Host " Delete {AppID}.lua from config\lua and config\stplug-in." -ForegroundColor Gray
  Write-Host ""
  Write-Host " [4] Upgrade Hammer" -ForegroundColor Yellow
- Write-Host " Install latest build, sync Windows time, close Steam/Hammer." -ForegroundColor Gray
+ Write-Host " Install latest build, sync time, clear announcement registry," -ForegroundColor Gray
+ Write-Host " remove unlock DLLs from Steam, close Steam/Hammer." -ForegroundColor Gray
  Write-Host ""
  Write-Host " ================================================================" -ForegroundColor DarkCyan
  while ($true) {
