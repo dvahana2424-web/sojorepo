@@ -690,6 +690,14 @@ function Set-SteamCfg([string]$InstallDir) {
  Write-Ok "Updates locked: $cfg"
 }
 
+function Remove-SteamCfg([string]$InstallDir) {
+ $cfg = Join-Path $InstallDir "steam.cfg"
+ if (Test-Path -LiteralPath $cfg) {
+  Remove-Item -LiteralPath $cfg -Force -ErrorAction SilentlyContinue
+  Write-Info "Removed steam.cfg so the package apply is not blocked."
+ }
+}
+
 function Start-LocalPackageServer([string]$RootDir, [int]$Port) {
  $job = Start-Job -ScriptBlock {
  param($ServeRoot, $ServePort)
@@ -1361,7 +1369,8 @@ function Invoke-SteamPackageSync {
 
  Stop-SteamProcesses
  Start-Sleep -Seconds 1
- Set-SteamCfg -InstallDir $steamDir
+ # steam.cfg with BootStrapperInhibitAll blocks -forcesteamupdate. Lock only after the target build is applied.
+ Remove-SteamCfg -InstallDir $steamDir
 
  $server = Start-LocalPackageServer -RootDir $cacheRoot -Port $ServerPort
  try {
@@ -1371,13 +1380,13 @@ function Invoke-SteamPackageSync {
   if ($after) {
    Write-Info "Steam after: $after"
    if ($after -eq $BuildVersion) {
+    Set-SteamCfg -InstallDir $steamDir
     Write-Ok "Done. Steam is on $BuildVersion ($BetaLabel)."
-    Write-Ok "steam.cfg locked - BootStrapperInhibitAll / BootStrapperForceSelfUpdate (headcrab-style)."
    } else {
-    Write-WarnText "Expected $BuildVersion but read $after. Run Other Functions again."
+    Write-WarnText "Expected $BuildVersion but read $after. steam.cfg was left unlocked so you can retry."
    }
   } else {
-   Write-WarnText "Install finished. Start Steam once to verify version."
+   Write-WarnText "Install finished. Start Steam once to verify version. steam.cfg was not written."
   }
  } finally {
   Stop-Job -Job $server -ErrorAction SilentlyContinue | Out-Null
