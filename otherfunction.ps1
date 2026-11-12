@@ -43,6 +43,12 @@ $Workers = 16
 $ServerPort = 1666
 $PinnedCommitSha = "40c23f2bf70dd4412a07a84d6797b56895ee437f"
 
+# Option [5]: Headcrab-style sync — local package mirror + steam.cfg (see headcrab createsteamcfg)
+$HeadcrabPinVersion = "1792618285"
+$HeadcrabPinManifestRef = "5ac8059e326268232f8bf80ba49e75d9cea69ed5"
+$HeadcrabPinBetaBranch = "Stable Client"
+$HeadcrabPinLabel = "Build 1792618285 (Steam About stable, Oct 2026)"
+
 $RepoOwner = "SteamTracking"
 $RepoName = "SteamTracking"
 $ManifestPath = "ClientManifest/steam_client_win64"
@@ -345,24 +351,32 @@ function New-ProgressBar([double]$Percent, [int]$Width = 28) {
 }
 
 function Show-InstallBanner {
- param([string]$CurrentVersion, [string]$SteamExe)
+ param(
+  [string]$CurrentVersion,
+  [string]$SteamExe,
+  [string]$TargetBuild,
+  [string]$CacheRootPath,
+  [string]$BetaLabel,
+  [string]$ReferenceLabel = $null
+ )
  $action = "INSTALL"
  if ($CurrentVersion) {
- if ($CurrentVersion -eq $TargetVersion) { $action = "REINSTALL (refresh same build)" }
- elseif ([long]$CurrentVersion -lt [long]$TargetVersion) { $action = "UPGRADE" }
+ if ($CurrentVersion -eq $TargetBuild) { $action = "REINSTALL (refresh same build)" }
+ elseif ([long]$CurrentVersion -lt [long]$TargetBuild) { $action = "UPGRADE" }
  else { $action = "DOWNGRADE" }
  }
+ $refLine = if ($ReferenceLabel) { $ReferenceLabel } else { "$TargetBuild ($UnlockModeLabel)" }
  Write-Host ""
  Write-Host " ================================================================" -ForegroundColor DarkCyan
  Write-Host " STEAM ONE-CLICK INSTALLER" -ForegroundColor White
  Write-Host " ================================================================" -ForegroundColor DarkCyan
  Write-Host ""
  Write-Host " Action : $action" -ForegroundColor Yellow
- Write-Host " Beta Branch : $BetaBranch" -ForegroundColor White
- Write-Host " Target Version : $TargetVersion" -ForegroundColor Green
- Write-Host " Reference Pin : $TargetVersion ($UnlockModeLabel)" -ForegroundColor Green
+ Write-Host " Beta Branch : $BetaLabel" -ForegroundColor White
+ Write-Host " Target Version : $TargetBuild" -ForegroundColor Green
+ Write-Host " Reference Pin : $refLine" -ForegroundColor Green
  Write-Host " Steam Path : $SteamExe" -ForegroundColor Gray
- Write-Host " Cache : $CacheRoot" -ForegroundColor Gray
+ Write-Host " Cache : $CacheRootPath" -ForegroundColor Gray
  if ($CurrentVersion) {
  Write-Host " Installed Now : $CurrentVersion" -ForegroundColor Magenta
  } else {
@@ -409,21 +423,26 @@ function Get-FilesFromManifest([string]$ManifestText) {
 }
 
 function Resolve-Manifest {
- $cached = Join-Path $CacheRoot "steam_client_win64"
+ param(
+  [Parameter(Mandatory = $true)][string]$BuildVersion,
+  [Parameter(Mandatory = $true)][string]$CacheRootPath,
+  [Parameter(Mandatory = $true)][string]$ManifestRef
+ )
+ $cached = Join-Path $CacheRootPath "steam_client_win64"
  if (Test-Path -LiteralPath $cached) {
  $text = Get-Content -LiteralPath $cached -Raw
- if ((Get-VersionFromManifest -ManifestText $text) -eq $TargetVersion) {
+ if ((Get-VersionFromManifest -ManifestText $text) -eq $BuildVersion) {
  Write-Info "Using cached manifest."
  return [pscustomobject]@{ Text = $text; CommitSha = "cache" }
  }
  }
- Write-Info "Downloading manifest for build $TargetVersion (1 request)..."
- $text = Get-ManifestAtRef -Ref $PinnedCommitSha
- if ((Get-VersionFromManifest -ManifestText $text) -ne $TargetVersion) {
- throw "Manifest version mismatch for build $TargetVersion."
+ Write-Info "Downloading manifest for build $BuildVersion (1 request)..."
+ $text = Get-ManifestAtRef -Ref $ManifestRef
+ if ((Get-VersionFromManifest -ManifestText $text) -ne $BuildVersion) {
+ throw "Manifest version mismatch for build $BuildVersion (manifest has $(Get-VersionFromManifest -ManifestText $text))."
  }
  Write-Ok "Manifest loaded."
- return [pscustomobject]@{ Text = $text; CommitSha = $PinnedCommitSha }
+ return [pscustomobject]@{ Text = $text; CommitSha = $ManifestRef }
 }
 
 function Ensure-Directory([string]$Path) {
@@ -697,9 +716,9 @@ function Start-LocalPackageServer([string]$RootDir, [int]$Port) {
  return $job
 }
 
-function Invoke-SteamApply([string]$SteamExe, [int]$Port) {
+function Invoke-SteamApply([string]$SteamExe, [int]$Port, [string]$TargetBuild) {
  $steamDir = Split-Path -Parent $SteamExe
- Write-Info "Applying Steam packages to build $TargetVersion..."
+ Write-Info "Applying Steam packages to build $TargetBuild..."
  $p = Start-Process -FilePath $SteamExe -WorkingDirectory $steamDir -PassThru -Wait -ArgumentList @(
  "-clearbeta", "-textmode", "-forcesteamupdate", "-forcepackagedownload",
  "-overridepackageurl", "http://localhost:$Port/", "-exitsteam"
@@ -1300,6 +1319,95 @@ function Invoke-UpgradeHammer {
     Invoke-UpgradeHammerPrepUnlockReset -PhaseLabel 'after install'
 }
 
+function Invoke-SteamPackageSync {
+ param(
+  [Parameter(Mandatory = $true)][string]$SteamExe,
+  [Parameter(Mandatory = $true)][string]$BuildVersion,
+  [Parameter(Mandatory = $true)][string]$ManifestRef,
+  [string]$BetaLabel = $BetaBranch,
+  [string]$ReferenceLabel = $null
+ )
+
+ $steamDir = Split-Path -Parent $SteamExe
+ $cacheRoot = Join-Path $WorkDir $BuildVersion
+ $currentVer = Get-LocalClientVersion -SteamDir $steamDir
+
+ Show-InstallBanner -CurrentVersion $currentVer -SteamExe $SteamExe `
+  -TargetBuild $BuildVersion -CacheRootPath $cacheRoot -BetaLabel $BetaLabel -ReferenceLabel $ReferenceLabel
+
+ if ($currentVer) {
+  Write-Info "Installed build now: $currentVer"
+ } else {
+  Write-WarnText "Could not read local package manifest - will install target build anyway."
+ }
+ Write-Info "Target build: $BuildVersion"
+
+ $resolved = Resolve-Manifest -BuildVersion $BuildVersion -CacheRootPath $cacheRoot -ManifestRef $ManifestRef
+ $files = Get-FilesFromManifest -ManifestText $resolved.Text
+ Ensure-Directory -Path $cacheRoot
+ Write-CacheArtifacts -Root $cacheRoot -ManifestText $resolved.Text -Files $files
+
+ if (Test-CacheComplete -Root $cacheRoot -Files $files) {
+  Write-Ok "Cache ready for $BuildVersion."
+ } else {
+  Start-ParallelDownload -Files $files -Destination $cacheRoot -MaxWorkers $Workers
+  if (-not (Test-CacheComplete -Root $cacheRoot -Files $files)) {
+   throw "Download incomplete. Check internet and run Other Functions again."
+  }
+ }
+
+ $before = Get-LocalClientVersion -SteamDir $steamDir
+ if ($before) { Write-Info "Steam before: $before" }
+
+ Stop-SteamProcesses
+ Start-Sleep -Seconds 1
+ Set-SteamCfg -InstallDir $steamDir
+
+ $server = Start-LocalPackageServer -RootDir $cacheRoot -Port $ServerPort
+ try {
+  Invoke-SteamApply -SteamExe $SteamExe -Port $ServerPort -TargetBuild $BuildVersion
+  Start-Sleep -Seconds 3
+  $after = Get-LocalClientVersion -SteamDir $steamDir
+  if ($after) {
+   Write-Info "Steam after: $after"
+   if ($after -eq $BuildVersion) {
+    Write-Ok "Done. Steam is on $BuildVersion ($BetaLabel)."
+    Write-Ok "steam.cfg locked - BootStrapperInhibitAll / BootStrapperForceSelfUpdate (headcrab-style)."
+   } else {
+    Write-WarnText "Expected $BuildVersion but read $after. Run Other Functions again."
+   }
+  } else {
+   Write-WarnText "Install finished. Start Steam once to verify version."
+  }
+ } finally {
+  Stop-Job -Job $server -ErrorAction SilentlyContinue | Out-Null
+  Remove-Job -Job $server -Force -ErrorAction SilentlyContinue | Out-Null
+ }
+}
+
+function Invoke-SteamHeadcrabPin {
+ param([Parameter(Mandatory = $true)][string]$SteamExe)
+
+ Write-Host ""
+ Write-Host " ----------------------------------------------------------------" -ForegroundColor DarkCyan
+ Write-Host " STEAM BUILD PIN (Headcrab-style)" -ForegroundColor White
+ Write-Host " ----------------------------------------------------------------" -ForegroundColor DarkCyan
+ Write-Host ""
+ Write-Host " Reads your current Steam build from package manifests." -ForegroundColor Gray
+ Write-Host " Downloads packages for build $HeadcrabPinVersion, applies via localhost mirror" -ForegroundColor Gray
+ Write-Host " (same idea as headcrab clientdowngrade + override package URL)." -ForegroundColor Gray
+ Write-Host " Writes steam.cfg so Steam stays on that build." -ForegroundColor Gray
+ Write-Host ""
+ $confirm = (Read-Host " Type YES to continue").Trim()
+ if ($confirm.ToUpperInvariant() -ne 'YES') {
+  Write-WarnText "Cancelled."
+  return
+ }
+
+ Invoke-SteamPackageSync -SteamExe $SteamExe -BuildVersion $HeadcrabPinVersion `
+  -ManifestRef $HeadcrabPinManifestRef -BetaLabel $HeadcrabPinBetaBranch -ReferenceLabel $HeadcrabPinLabel
+}
+
 function Show-MainMenu {
  Write-Host ""
  Write-Host " ================================================================" -ForegroundColor DarkCyan
@@ -1321,18 +1429,20 @@ function Show-MainMenu {
  Write-Host " Install latest build, sync time, clear announcement registry," -ForegroundColor Gray
  Write-Host " remove unlock DLLs from Steam, close Steam/Hammer." -ForegroundColor Gray
  Write-Host ""
+ Write-Host " [5] Pin Steam to build $HeadcrabPinVersion" -ForegroundColor Yellow
+ Write-Host " Headcrab-style downgrade/upgrade + steam.cfg (no client auto-update)." -ForegroundColor Gray
+ Write-Host ""
  Write-Host " ================================================================" -ForegroundColor DarkCyan
  while ($true) {
- $sel = (Read-Host " Press 1, 2, 3, or 4 then Enter").Trim()
- if ($sel -eq '1' -or $sel -eq '2' -or $sel -eq '3' -or $sel -eq '4') { return $sel }
- Write-WarnText "Please type 1, 2, 3, or 4."
+ $sel = (Read-Host " Press 1, 2, 3, 4, or 5 then Enter").Trim()
+ if ($sel -match '^[1-5]$') { return $sel }
+ Write-WarnText "Please type 1, 2, 3, 4, or 5."
  }
 }
 
 # --- Main ---
 $WorkDir = Join-Path $env:LOCALAPPDATA "SteamStableInstaller\steam-cache"
 $SteamPath = $null
-$CacheRoot = Join-Path $WorkDir $TargetVersion
 
 try {
  if (-not (Test-IsAdministrator)) {
@@ -1361,52 +1471,15 @@ try {
  Wait-ForKey
  exit 0
  }
-
- # choice 1 -> Downgrade Steam (one-click installer below)
- $steamDir = Split-Path -Parent $SteamPath
- $currentVer = Get-LocalClientVersion -SteamDir $steamDir
- Show-InstallBanner -CurrentVersion $currentVer -SteamExe $SteamPath
-
- $resolved = Resolve-Manifest
- $files = Get-FilesFromManifest -ManifestText $resolved.Text
- Ensure-Directory -Path $CacheRoot
- Write-CacheArtifacts -Root $CacheRoot -ManifestText $resolved.Text -Files $files
-
- if (Test-CacheComplete -Root $CacheRoot -Files $files) {
- Write-Ok "Cache ready for $TargetVersion."
- } else {
- Start-ParallelDownload -Files $files -Destination $CacheRoot -MaxWorkers $Workers
- if (-not (Test-CacheComplete -Root $CacheRoot -Files $files)) {
- throw "Download incomplete. Check internet and run Other Functions again."
- }
+ if ($choice -eq '5') {
+ Invoke-SteamHeadcrabPin -SteamExe $SteamPath
+ Wait-ForKey
+ exit 0
  }
 
- $before = Get-LocalClientVersion -SteamDir $steamDir
- if ($before) { Write-Info "Steam before: $before" }
-
- Stop-SteamProcesses
- Start-Sleep -Seconds 1
- Set-SteamCfg -InstallDir $steamDir
-
- $server = Start-LocalPackageServer -RootDir $CacheRoot -Port $ServerPort
- try {
- Invoke-SteamApply -SteamExe $SteamPath -Port $ServerPort
- Start-Sleep -Seconds 3
- $after = Get-LocalClientVersion -SteamDir $steamDir
- if ($after) {
- Write-Info "Steam after: $after"
- if ($after -eq $TargetVersion) {
- Write-Ok "Done. Steam is on $TargetVersion ($BetaBranch)."
- } else {
- Write-WarnText "Expected $TargetVersion but read $after. Run Other Functions again."
- }
- } else {
- Write-WarnText "Install finished. Start Steam once to verify version."
- }
- } finally {
- Stop-Job -Job $server -ErrorAction SilentlyContinue | Out-Null
- Remove-Job -Job $server -Force -ErrorAction SilentlyContinue | Out-Null
- }
+ # choice 1 -> Downgrade Steam (Hammer stable pin)
+ Invoke-SteamPackageSync -SteamExe $SteamPath -BuildVersion $TargetVersion `
+  -ManifestRef $PinnedCommitSha -BetaLabel $BetaBranch
 
  Wait-ForKey
  exit 0
